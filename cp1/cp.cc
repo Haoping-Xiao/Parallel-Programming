@@ -6,8 +6,7 @@ This is the function you need to implement. Quick reference:
 - correlation between rows i and row j has to be stored in result[i + j*ny]
 - only parts with 0 <= j <= i < ny need to be filled
 */
-#include <math.h>
-#include <vector>
+
 
 // void correlate(int ny, int nx, const float *data, float *result) {
 //   // initialize avg array with 0
@@ -39,13 +38,14 @@ This is the function you need to implement. Quick reference:
 //   // release memory
 //   delete []avg;
 // }
-
+#include <math.h>
+#include <vector>
 void correlate(int ny, int nx, const float *data, float *result) {
   std::vector<double> avg(ny,0);
   std::vector<double> normalized(ny*nx,0);
   std::vector<double> sqrtSqureSum(ny,0);
 
-  
+
   for (int y=0; y<ny; ++y){
     double temp=0;
     for (int x=0; x<nx; ++x){
