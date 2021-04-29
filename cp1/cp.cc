@@ -42,8 +42,10 @@ This is the function you need to implement. Quick reference:
 
 void correlate(int ny, int nx, const float *data, float *result) {
   // initialize avg array with 0
-  double *avg = new double[ny]();
-  std::vector<std::vector<double>> normalized(ny,std::vector<double>(nx,0));
+  std::vector<double> avg(ny,0);
+  // double *avg = new double[ny]();
+  std::vector<double> normalized(ny*nx,0);
+  // std::vector<std::vector<double>> normalized(ny,std::vector<double>(nx,0));
   std::vector<double> sqrtSqureSum(ny,0);
 
   for (int y=0; y<ny; ++y){
@@ -55,20 +57,20 @@ void correlate(int ny, int nx, const float *data, float *result) {
   }
   for (int y=0; y<ny; ++y){
     for (int x=0; x<nx; ++x){
-      normalized[y][x]=data[y*nx+x]-avg[y];
+      normalized[y*nx+x]=data[y*nx+x]-avg[y];
     }
   }
 
   for (int y=0; y<ny; ++y){
     for (int x=0; x<nx; ++x){
-      sqrtSqureSum[y]+=pow(normalized[y][x],2);
+      sqrtSqureSum[y]+=pow(normalized[y*nx+x],2);
     }
     sqrtSqureSum[y]=sqrt(sqrtSqureSum[y]);
   }
 
   for (int y=0; y<ny; ++y){
     for (int x=0; x<nx; ++x){
-      normalized[y][x]/=sqrtSqureSum[y];
+      normalized[y*nx+x]/=sqrtSqureSum[y];
     }
   }
 
@@ -77,7 +79,7 @@ void correlate(int ny, int nx, const float *data, float *result) {
       if(j<=i){
         double temp=0;
         for (int k=0; k<nx; ++k){
-          temp+=normalized[i][k]*normalized[j][k];
+          temp+=normalized[i*nx+k]*normalized[j*nx+k];
         }
         result[i+j*ny]=temp;
       }else continue;
@@ -85,5 +87,5 @@ void correlate(int ny, int nx, const float *data, float *result) {
     }
   }
   // release memory
-  delete []avg;
+  // delete []avg;
 }

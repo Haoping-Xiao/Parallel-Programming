@@ -52,5 +52,12 @@ int main(){
   float out[25];
   mf(ny,nx,hy,hx,in,out);
   
+
+  // all zero here
+  // std::vector<double> test(3);
+  // for (int i =0;i <3;i++){
+  //   std::cout<<test[i]<<std::endl;
+  // }
+
   return 0;
 }
