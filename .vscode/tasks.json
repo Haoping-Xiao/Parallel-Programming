@@ -3,13 +3,15 @@
     {
       "type": "cppbuild",
       "label": "C/C++: g++ build active file",
-      "command": "/usr/bin/g++",
+      "command": "/usr/local/bin/g++-10",
       "args": [
         "-g",
+        "-fopenmp",
         "${file}",
         "-o",
         "${fileDirname}/${fileBasenameNoExtension}",
-        "--std=c++17"
+        "--std=c++17",
+        
       ],
       "options": {
         "cwd": "${workspaceFolder}"
