@@ -8,7 +8,7 @@ This is the function you need to implement. Quick reference:
 */
 #include <math.h>
 #include <vector>
-
+#include <cstdlib>
 typedef double double4_t __attribute__ ((vector_size (4 * sizeof(double))));
 
 static double4_t* double4_alloc(std::size_t n) {
@@ -46,7 +46,7 @@ void correlate(int ny, int nx, const float *data, float *result) {
   std::vector<double> sqrtSqureSum(ny,0);
 
   double4_t* normalized=double4_alloc(ny*new_nx);
-
+  // #pragma omp parallel for schedule(static,2)
   for (int y=0; y<ny; ++y){
     for (int x=0; x<new_nx; ++x){
       for (int k=0; k<parallel;++k){
@@ -56,7 +56,7 @@ void correlate(int ny, int nx, const float *data, float *result) {
     }
   }
 
-
+  // #pragma omp parallel for schedule(static,1)
   for (int y=0; y<ny; ++y){
     double4_t temp={0};
     for (int x=0; x<new_nx; x++){
@@ -65,7 +65,7 @@ void correlate(int ny, int nx, const float *data, float *result) {
     avg[y]=sum(temp)/nx;
   }
 
-
+  // #pragma omp parallel for schedule(static,1)
   for (int y=0; y<ny; ++y){
     int x=0;
     for (x=0; x<new_nx-1; ++x){
@@ -79,6 +79,7 @@ void correlate(int ny, int nx, const float *data, float *result) {
 
   std::free(padding_data);
 
+  // #pragma omp parallel for schedule(static,1)
   for (int y=0; y<ny; ++y){
     double4_t temp={0};
     for (int x=0; x<new_nx; x++){
@@ -89,6 +90,7 @@ void correlate(int ny, int nx, const float *data, float *result) {
 
   }
 
+  // #pragma omp parallel for schedule(static,2)
   for (int y=0; y<ny; ++y){
     for (int x=0; x<new_nx; ++x){
       //vector / scalar == each element / scalar
@@ -96,6 +98,7 @@ void correlate(int ny, int nx, const float *data, float *result) {
     }
   }
 
+  // #pragma omp parallel for schedule(static,1)
   for (int i=0; i<ny; ++i){
     for (int j=i; j<ny; ++j){
       double4_t temp={0};

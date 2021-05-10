@@ -3,7 +3,7 @@
     {
       "type": "cppbuild",
       "label": "C/C++: g++ build active file",
-      "command": "/usr/local/bin/g++-10",
+      "command": "/usr/local/bin/g++",
       "args": [
         "-g",
         "-fopenmp",
@@ -11,7 +11,10 @@
         "-o",
         "${fileDirname}/${fileBasenameNoExtension}",
         "--std=c++17",
-        "-Wno-psabi"
+        "-Wno-psabi",
+        "-march=native",
+        
+        // "-mavx512vl"
       ],
       "options": {
         "cwd": "${workspaceFolder}"
