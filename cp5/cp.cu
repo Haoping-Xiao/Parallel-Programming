@@ -37,7 +37,7 @@ __global__ void correlate_gpu(int ny, int nx, const float*data, float *result, i
   const int nd=16;//         nd:    nd==blockDim.x==blockDim.y
                   //                compute nd*nd results each thread.
 
-  int step=nd*nd;// each block will compute step*step results.
+  // int step=nd*nd;// each block will compute step*step results.
   int ia=threadIdx.x;
   int ja=threadIdx.y;
   int ic=blockIdx.x;
@@ -65,26 +65,33 @@ __global__ void correlate_gpu(int ny, int nx, const float*data, float *result, i
     float x[nd];
     float y[nd];
 
-    for(int ib=0; ib<nd; ib++){
-      int i=ic*step+ib*nd+ia;
-      x[ib]=data[k*new_ny +i];
+    for(int ii=0; ii<nd; ii++){
+      // int i=ic*step+ib*nd+ia;
+      int i=(ic*nd+ii)*nd+ia;
+      int j=(jc*nd+ii)*nd+ja;
+      x[ii]=data[k*new_ny +i];
+      y[ii]=data[k*new_ny +j];
     }
 
-    for(int jb=0; jb<nd; jb++){
-      int j=jc*step+jb*nd+ja;
-      y[jb]=data[k*new_ny+j];
-    }
+    // for(int jb=0; jb<nd; jb++){
+    //   // int j=jc*step+jb*nd+ja;
+    //   int j=(jc*nd+jb)*nd+ja;
+    //   y[jb]=data[k*new_ny+j];
+    // }
 
     for(int ib=0; ib<nd; ib++){
       for(int jb=0; jb<nd; jb++){
-        v[ib][jb]+=x[ib]*y[jb];
+        // i<j
+        // if((ic*nd+ib)*nd+ia<=(jc*nd+jb)*nd+ja){
+          v[ib][jb]+=x[ib]*y[jb];
+        // }
       }
     }
   }
   for(int ib=0; ib<nd; ib++){
     for(int jb=0; jb<nd; jb++){
-      int i=ic*step+ib*nd+ia;
-      int j=jc*step+jb*nd+ja;
+      int i=(ic*nd+ib)*nd+ia;
+      int j=(jc*nd+jb)*nd+ja;
       if(i<ny&&j<ny){
         result[ny*i+j]=v[ib][jb];
       }
@@ -94,7 +101,33 @@ __global__ void correlate_gpu(int ny, int nx, const float*data, float *result, i
   // result[i*ny+j]=temp;
 }
 
+__global__ void normalize(int ny, int nx, float*data, int step){
+  int i = blockIdx.x;
+  int j = threadIdx.x;
+  int row=i*step+j;
+  
+  if (row<ny){
+    // printf("row is %d \n", row);
+    //for each row
+    float temp=0, avg=0, sqrtSqureSum=0;
+    for (int x=0; x<nx; ++x){
+      temp+=data[row*nx+x];
+    }
+    avg=temp/nx;
+    for (int x=0; x<nx; ++x){
+      data[row*nx+x]=data[row*nx+x]-avg;
+    }
 
+    for (int x=0; x<nx; ++x){
+      sqrtSqureSum+=powf(data[row*nx+x],2);
+    }
+    sqrtSqureSum=sqrtf(sqrtSqureSum);
+
+    for (int x=0; x<nx; ++x){
+      data[row*nx+x]/=sqrtSqureSum;
+    }
+  }
+}
 
 
 __global__ void padding_transpose(int ny, int nx, const float*data, float* result, int new_ny){
@@ -115,12 +148,15 @@ __global__ void padding_transpose(int ny, int nx, const float*data, float* resul
 
 
 
+
 static inline int divup(int a, int b) {
   return (a + b - 1)/b;
 }
 static inline int roundup(int a, int b) {
   return divup(a, b) * b;
 }
+
+
 void correlate(int ny, int nx, const float *data, float *result) {
 
 
@@ -147,44 +183,45 @@ void correlate(int ny, int nx, const float *data, float *result) {
 
 
 
-  std::vector<float> avg(ny,0);
-  std::vector<float> normalized(ny*nx,0);
-  std::vector<float> sqrtSqureSum(ny,0);
-  std::vector<float> transposed(nx*new_ny,0);
-
-  for (int y=0; y<ny; ++y){
-    double temp=0;
-    for (int x=0; x<nx; ++x){
-      temp+=data[y*nx+x];
-    }
-    avg[y]=temp/nx;
-  }
-  for (int y=0; y<ny; ++y){
-    for (int x=0; x<nx; ++x){
-      normalized[y*nx+x]=data[y*nx+x]-avg[y];
-    }
-  }
-  // delete[] avg;
-  for (int y=0; y<ny; ++y){
-    for (int x=0; x<nx; ++x){
-      sqrtSqureSum[y]+=pow(normalized[y*nx+x],2);
-    }
-    sqrtSqureSum[y]=sqrt(sqrtSqureSum[y]);
-  }
-  for (int y=0; y<ny; ++y){
-    for (int x=0; x<nx; ++x){
-      normalized[y*nx+x]/=sqrtSqureSum[y];
-    }
-  }
+  // std::vector<float> avg(ny,0);
+  // std::vector<float> normalized(ny*nx,0);
+  // std::vector<float> sqrtSqureSum(ny,0);
+  // std::vector<float> transposed(nx*new_ny,0);
 
   // for (int y=0; y<ny; ++y){
+  //   double temp=0;
   //   for (int x=0; x<nx; ++x){
-  //     std::cout << normalized[y*nx+x] << " ";
+  //     temp+=data[y*nx+x];
   //   }
-  //   std::cout<< std::endl ;
+  //   avg[y]=temp/nx;
   // }
+  // for (int y=0; y<ny; ++y){
+  //   for (int x=0; x<nx; ++x){
+  //     normalized[y*nx+x]=data[y*nx+x]-avg[y];
+  //   }
+  // }
+  // // delete[] avg;
+  // for (int y=0; y<ny; ++y){
+  //   for (int x=0; x<nx; ++x){
+  //     sqrtSqureSum[y]+=pow(normalized[y*nx+x],2);
+  //   }
+  //   sqrtSqureSum[y]=sqrt(sqrtSqureSum[y]);
+  // }
+  // for (int y=0; y<ny; ++y){
+  //   for (int x=0; x<nx; ++x){
+  //     normalized[y*nx+x]/=sqrtSqureSum[y];
+  //   }
+  // }
+  cuda_memcpy(dGPU,data,ny*nx,cudaMemcpyHostToDevice);
 
-  cuda_memcpy(dGPU,normalized.data(),ny*nx,cudaMemcpyHostToDevice);
+
+  {
+    // dim3 dimBlock(block_size,block_size);
+    // dim3 dimGrid(divup(ny,block_size*block_size),1);
+    normalize<<<divup(ny,step),step>>>(ny,nx,dGPU,step);
+  }
+
+  // cuda_memcpy(dGPU,normalized.data(),ny*nx,cudaMemcpyHostToDevice);
   // Run kernel to padding and transpose
   {
     dim3 dimBlock(64,1);
