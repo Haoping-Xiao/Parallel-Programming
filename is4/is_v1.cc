@@ -111,18 +111,18 @@ Result segment(int ny, int nx, const float *data) {
                     int anchor_x1=offset_x+width;
                     // int anchor_y0=offset_y;
                     // int anchor_x0=offset_x;
-                    asm("# read starts here");
                     double4_t sum_in=sum_data[anchor_x1+new_nx*anchor_y1]-sum_data[offset_x+new_nx*anchor_y1]
                                     -sum_data[anchor_x1+new_nx*offset_y]+sum_data[offset_x+new_nx*offset_y];
-                    asm("# read ends here");
+                    asm("# magic starts here");
                     double4_t sum_out=sum_all-sum_in;
                     double4_t cost=-(sum_in*sum_in)*reverse_in-(sum_out*sum_out)*reverse_out;
+                    asm("# magic ends here");
                     double total_cost=sum(cost);
-                    asm("# if starts here");
+                    
                     if(total_cost < std::get<0>(errors[width-1+nx*(height-1)])){
                         errors[width-1+nx*(height-1)]=std::make_tuple(total_cost, offset_y,offset_x,anchor_y1,anchor_x1);
                     }
-                    asm("# if ends here");
+                    
                 }
             }
             asm("# loop ends here");

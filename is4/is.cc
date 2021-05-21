@@ -17,9 +17,9 @@ constexpr int parallel=4;
 
 typedef double double4_t __attribute__ ((vector_size (parallel * sizeof(double))));
 
-static inline double sum(double4_t vv) {
+static inline double sum3(double4_t vv) {
     double temp=0;
-    for (int i = 0; i < parallel; ++i) {
+    for (int i = 0; i < 3; ++i) {
         temp+=vv[i];
     }
     return temp;
@@ -97,7 +97,7 @@ Result segment(int ny, int nx, const float *data) {
     // errors: error+anchor_y0+anchor_x0+anchor_y1+anchor_x1
     std::vector<std::tuple<double,int,int,int,int>> errors(ny*nx,{0,0,0,0,0});
 
-    #pragma omp parallel for collapse(2) schedule(static,1) 
+    #pragma omp parallel for collapse(2) schedule(dynamic)
     for(int height=1; height<=ny; height++){
         for(int width=1; width<=nx; width++){
             int in=width*height;
@@ -119,7 +119,7 @@ Result segment(int ny, int nx, const float *data) {
                     // double4_t sum_out=sum_all-sum_in;
                     // simplifed sum of square errors: remove const term + Horner's method
                     double4_t cost=temp*sum_all+sum_in*(-2.0*temp+sum_in*reverse_sum);
-                    double total_cost=sum(cost);
+                    double total_cost=sum3(cost);
                     int index=width-1+nx*(height-1);
                     if(total_cost > std::get<0>(errors[index])){
                         errors[index]=std::make_tuple(total_cost, offset_y,offset_x,anchor_y1,anchor_x1);

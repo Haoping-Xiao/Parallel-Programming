@@ -61,7 +61,7 @@ void psort(int n, data_t *data) {
     }
 
     #pragma omp parallel
-    #pragma omp single
+    #pragma omp single nowait
     TopDownSplitMerge(copy,0,n,data);// sort data from B[] into A[]
     // TopDownSplitMerge(data,0,n);
     delete[] copy;
