@@ -85,7 +85,7 @@ __global__ void correlate_gpu(int ny, int nx, const float*data, float *result, i
     for(int jb=0; jb<nd; jb++){
       int i=ic*step+ib*nd+ia;
       int j=jc*step+jb*nd+ja;
-      if(i<ny&&j<ny&&i<=j){
+      if(i<ny&&j<ny){
         result[ny*i+j]=v[ib][jb];
       }
     }
@@ -101,11 +101,11 @@ __global__ void padding_transpose(int ny, int nx, const float*data, float* resul
   //result is padding and transpose data
   int ja=threadIdx.x;
   int i=blockIdx.y;
-
+  
   for (int jb=0; jb<nx; jb+=blockDim.x){
     int j=jb+ja;
     if (j>=nx) break;
-    float v=i<ny?data[i*ny+j]:0; //padding
+    float v=i<ny?data[i*nx+j]:0.0; //padding
     result[new_ny*j+i]=v; //transpose
   }
 }
@@ -177,15 +177,14 @@ void correlate(int ny, int nx, const float *data, float *result) {
     }
   }
 
-  for (int y=0; y<ny; ++y){
-    for (int x=0; x<nx; ++x){
-      std::cout << normalized[y*nx+x] << " ";
-    }
-    std::cout<< std::endl ;
-  }
+  // for (int y=0; y<ny; ++y){
+  //   for (int x=0; x<nx; ++x){
+  //     std::cout << normalized[y*nx+x] << " ";
+  //   }
+  //   std::cout<< std::endl ;
+  // }
 
   cuda_memcpy(dGPU,normalized.data(),ny*nx,cudaMemcpyHostToDevice);
-
   // Run kernel to padding and transpose
   {
     dim3 dimBlock(64,1);
@@ -195,15 +194,15 @@ void correlate(int ny, int nx, const float *data, float *result) {
   }
 
 
-  cuda_memcpy(transposed.data(), padding, new_ny * nx, cudaMemcpyDeviceToHost);
-  std::cout << new_ny<<std::endl;
-  std::cout << transposed.size()<<std::endl;
-  for(int x=0;x<nx;x++){
-    for(int y=0;y<new_ny;y++){
-      std::cout<< transposed[x*new_ny+y] << " ";
-    }
-    std::cout<< std::endl<< "----"<< std::endl;
-  }
+  // cuda_memcpy(transposed.data(), padding, new_ny * nx, cudaMemcpyDeviceToHost);
+  // std::cout << new_ny<<std::endl;
+  // std::cout << transposed.size()<<std::endl;
+  // for(int x=0;x<nx;x++){
+  //   for(int y=0;y<new_ny;y++){
+  //     std::cout<< transposed[x*new_ny+y] << " ";
+  //   }
+  //   std::cout<< std::endl<< "----"<< std::endl;
+  // }
   
   // for (int x=0;x<nx;++x){
   //   for (int y=0; y<ny; ++y){
