@@ -34,7 +34,7 @@ void cuda_memcpy(T* target, const T* source, std::size_t num, cudaMemcpyKind dir
   
 
 __global__ void correlate_gpu(int ny, int nx, const float*data, float *result, int new_ny){
-  const int nd=16;//         nd:    nd==blockDim.x==blockDim.y
+  const int nd=8;//         nd:    nd==blockDim.x==blockDim.y
                   //                compute nd*nd results each thread.
 
   // int step=nd*nd;// each block will compute step*step results.
@@ -42,61 +42,60 @@ __global__ void correlate_gpu(int ny, int nx, const float*data, float *result, i
   int ja=threadIdx.y;
   int ic=blockIdx.x;
   int jc=blockIdx.y;
-
-  // int i=threadIdx.x+blockIdx.x*blockDim.x;
-  // int j=threadIdx.y+blockIdx.y*blockDim.y;
-
-  // if(i>=ny || j>=ny) return;
-  // if (i>j){
-  //   result[i*ny+j]=0;
-  //   return;
-  // }
-
-  float v[nd][nd];
-  // double temp=0;
-  for(int ib=0; ib<nd; ib++){
-    for(int jb=0; jb<nd; jb++){
-      v[ib][jb]=0;
-    }
-  }
-
-  for (int k=0; k<nx; ++k){
-
-    float x[nd];
-    float y[nd];
-
-    for(int ii=0; ii<nd; ii++){
-      // int i=ic*step+ib*nd+ia;
-      int i=(ic*nd+ii)*nd+ia;
-      int j=(jc*nd+ii)*nd+ja;
-      x[ii]=data[k*new_ny +i];
-      y[ii]=data[k*new_ny +j];
-    }
-
-    // for(int jb=0; jb<nd; jb++){
-    //   // int j=jc*step+jb*nd+ja;
-    //   int j=(jc*nd+jb)*nd+ja;
-    //   y[jb]=data[k*new_ny+j];
-    // }
-
+  if(ic>jc){
     for(int ib=0; ib<nd; ib++){
       for(int jb=0; jb<nd; jb++){
-        // i<j
-        // if((ic*nd+ib)*nd+ia<=(jc*nd+jb)*nd+ja){
-          v[ib][jb]+=x[ib]*y[jb];
-        // }
+        int i=(ic*nd+ib)*nd+ia;
+        int j=(jc*nd+jb)*nd+ja;
+        if(i<ny&&j<ny){
+          result[ny*i+j]=0;
+        }
+      }
+    }
+  }else{
+    float v[nd][nd];
+    // double temp=0;
+    for(int ib=0; ib<nd; ib++){
+      for(int jb=0; jb<nd; jb++){
+        v[ib][jb]=0;
+      }
+    }
+
+    for (int k=0; k<nx; ++k){
+
+      float x[nd];
+      float y[nd];
+
+      for(int ii=0; ii<nd; ii++){
+        // int i=ic*step+ib*nd+ia;
+        int i=(ic*nd+ii)*nd+ia;
+        int j=(jc*nd+ii)*nd+ja;
+        x[ii]=data[k*new_ny +i];
+        y[ii]=data[k*new_ny +j];
+      }
+
+
+
+      for(int ib=0; ib<nd; ib++){
+        for(int jb=0; jb<nd; jb++){
+          // i<j
+          // if((ic*nd+ib)*nd+ia<=(jc*nd+jb)*nd+ja){
+            v[ib][jb]+=x[ib]*y[jb];
+          // }
+        }
+      }
+    }
+    for(int ib=0; ib<nd; ib++){
+      for(int jb=0; jb<nd; jb++){
+        int i=(ic*nd+ib)*nd+ia;
+        int j=(jc*nd+jb)*nd+ja;
+        if(i<ny&&j<ny){
+          result[ny*i+j]=v[ib][jb];
+        }
       }
     }
   }
-  for(int ib=0; ib<nd; ib++){
-    for(int jb=0; jb<nd; jb++){
-      int i=(ic*nd+ib)*nd+ia;
-      int j=(jc*nd+jb)*nd+ja;
-      if(i<ny&&j<ny){
-        result[ny*i+j]=v[ib][jb];
-      }
-    }
-  }
+  
 
   // result[i*ny+j]=temp;
 }
@@ -161,7 +160,7 @@ void correlate(int ny, int nx, const float *data, float *result) {
 
 
   // const int nd=16;//compute nd*nd results each thread. could not less than 
-  const int block_size=16; //16*16 threads
+  const int block_size=8; //16*16 threads
   const int step=block_size*block_size; // each block will compute step*step results.
 
   int new_ny=roundup(ny,step);
