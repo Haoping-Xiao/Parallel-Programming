@@ -2,6 +2,7 @@
 #include <omp.h>
 #include <iostream>
 #include <vector>
+#include <random>
 
 typedef unsigned long long data_t;
 
@@ -26,7 +27,6 @@ void quickSort(data_t arr[], int low, int high)
         constexpr int samples_num=11;
         int split=interval/samples_num;
         int left=low, right=high, i=low;
-
         std::vector<data_t> samples;
         for (int i=0; i<samples_num; i++){
             samples.push_back(arr[low+split*i]);

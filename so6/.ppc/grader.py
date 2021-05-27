@@ -7,7 +7,7 @@ if sys.version_info < (3, 6):
 from typing import List
 
 import ppcgrader
-import ppcis
+import ppcso
 
 if __name__ == "__main__":
-    ppcgrader.cli(ppcis.Config(openmp=True))
+    ppcgrader.cli(ppcso.Config(openmp=True, gpu=True))
