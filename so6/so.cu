@@ -47,7 +47,7 @@ __global__ void getMask(data_t *d_in, unsigned int *d_out, const int len, const 
     }
 }
 
-__global__ void getIndex(unsigned int *d_index, unsigned int *d_sum, unsigned int *d_mask, const int len, const unsigned int n,
+__global__ void getIndex(unsigned int *d_index, unsigned int *d_sum, unsigned int* d_mask, const int len, const unsigned int n,
     unsigned int total_pre) {
     unsigned int index = threadIdx.x + blockDim.x * blockIdx.x;
     
@@ -55,11 +55,13 @@ __global__ void getIndex(unsigned int *d_index, unsigned int *d_sum, unsigned in
   
     if (start>=n || total_pre==n) return;
     
+
     unsigned int end=start+len;
     for (unsigned int i=start; i<end && i<n; i++){
-      if(d_mask[i]==1){
-        d_index[i]=total_pre+d_sum[i];
-      }
+      d_index[i]=d_mask[i]?d_sum[i]:i-d_sum[i]+total_pre;
+      // if(d_mask[i]==1){
+      //   d_index[i]=total_pre+d_sum[i];
+      // }
     }
 }
 
@@ -159,7 +161,7 @@ void psort(int n, data_t *data) {
   if(n<=0) return;
   // FIXME: Implement a more efficient parallel sorting algorithm for the GPU.
 
-  const int block_size=128;//64 threads per block;
+  const int block_size=256;//64 threads per block;
   const int len=2000; // add 1000 prefix sum per thread; 
 
   data_t *d_temp;
@@ -211,34 +213,34 @@ void psort(int n, data_t *data) {
 
       total_zeros+=(mask_last==1)?1:0;
 
-      getIndex<<<divup(n,block_size*len),block_size>>>(d_index, d_sum, d_out, len, n, 0);
-      
-      CHECK(cudaGetLastError());
-      // get mask for 1 and store in d_out
-      getMask<<<divup(n,block_size*len),block_size>>>(d_in, d_out, len, n, i, 1);
-
-      CHECK(cudaGetLastError());
-      //inclusive prefix sum
-      CHECK(cudaMemset(d_sum,0,n*sizeof(unsigned int)));
-      prefixsum<<<divup(n,block_size*len),block_size>>>(d_out,d_sum,len,n);
-      CHECK(cudaGetLastError());
-      serialsum_accrossthread<<<divup(n,block_size*len*block_size),block_size>>>(d_sum,len,n);
-      CHECK(cudaGetLastError());
-      mergethread<<<divup(n,block_size*len),block_size>>>(d_sum,len,n);
-      CHECK(cudaGetLastError());
-
-      // CHECK(cudaMemcpy(inter_sum.data() , d_sum, n * sizeof(unsigned int), cudaMemcpyDeviceToHost));
-      // serialsum_accrossblock(inter_sum.data(), len, n, block_size);
-      // CHECK(cudaMemcpy(d_sum, inter_sum.data(),n * sizeof(unsigned int), cudaMemcpyHostToDevice));
-
-      serialsum_accrossblock<<<1,1>>>(d_sum, len, n, block_size);
-      CHECK(cudaGetLastError());
-      mergeblock<<<divup(n,block_size*len),block_size>>>(d_sum,len,n);
-      CHECK(cudaGetLastError());
-
-      
       getIndex<<<divup(n,block_size*len),block_size>>>(d_index, d_sum, d_out, len, n, total_zeros);
+      
       CHECK(cudaGetLastError());
+      // // get mask for 1 and store in d_out
+      // getMask<<<divup(n,block_size*len),block_size>>>(d_in, d_out, len, n, i, 1);
+
+      // CHECK(cudaGetLastError());
+      // //inclusive prefix sum
+      // CHECK(cudaMemset(d_sum,0,n*sizeof(unsigned int)));
+      // prefixsum<<<divup(n,block_size*len),block_size>>>(d_out,d_sum,len,n);
+      // CHECK(cudaGetLastError());
+      // serialsum_accrossthread<<<divup(n,block_size*len*block_size),block_size>>>(d_sum,len,n);
+      // CHECK(cudaGetLastError());
+      // mergethread<<<divup(n,block_size*len),block_size>>>(d_sum,len,n);
+      // CHECK(cudaGetLastError());
+
+      // // CHECK(cudaMemcpy(inter_sum.data() , d_sum, n * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+      // // serialsum_accrossblock(inter_sum.data(), len, n, block_size);
+      // // CHECK(cudaMemcpy(d_sum, inter_sum.data(),n * sizeof(unsigned int), cudaMemcpyHostToDevice));
+
+      // serialsum_accrossblock<<<1,1>>>(d_sum, len, n, block_size);
+      // CHECK(cudaGetLastError());
+      // mergeblock<<<divup(n,block_size*len),block_size>>>(d_sum,len,n);
+      // CHECK(cudaGetLastError());
+
+      
+      // getIndex<<<divup(n,block_size*len),block_size>>>(d_index, d_sum, d_out, len, n, total_zeros);
+      // CHECK(cudaGetLastError());
 
 
       scatter<<<divup(n,block_size*len),block_size>>>(d_in, d_index, d_out_long, len, n);
