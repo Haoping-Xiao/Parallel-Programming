@@ -53,7 +53,7 @@ __global__ void getIndex(unsigned int *d_index, unsigned int *d_sum, unsigned in
     
     unsigned int start=index*len;
   
-    if (start>=n || total_pre==n) return;
+    if (start>=n) return;
     
 
     unsigned int end=start+len;
@@ -184,14 +184,20 @@ void psort(int n, data_t *data) {
 
   data_t bits=sizeof(data_t)*8;
 
-
+  // unsigned int out[n];
+  // unsigned int sum[n];
   unsigned int total_zeros, mask_last;
   //one pass here
   for(data_t i=0; i<bits; i++){
       CHECK(cudaMemset(d_sum,0,n*sizeof(unsigned int)));
       getMask<<<divup(n,block_size*len),block_size>>>(d_in, d_out, len, n, i, 0);
       CHECK(cudaGetLastError());
-
+      // CHECK(cudaMemcpy(out, d_out, n * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+      // std::cout<<"out "<<std::endl;
+      // for(int j=0;j<n;j++){
+      //   std::cout<<out[j]<<" ";
+      // }
+      // std::cout<<std::endl;
       //inclusive prefix sum
       prefixsum<<<divup(n,block_size*len),block_size>>>(d_out,d_sum,len,n);
       CHECK(cudaGetLastError());
@@ -207,15 +213,26 @@ void psort(int n, data_t *data) {
       // CHECK(cudaGetLastError());
       mergeblock<<<divup(n,block_size*len),block_size>>>(d_sum,len,n);
       CHECK(cudaGetLastError());
-
+      // CHECK(cudaMemcpy(sum, d_sum, n * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+      // std::cout<<"sum "<<std::endl;
+      // for(int j=0;j<n;j++){
+      //   std::cout<<sum[j]<<" ";
+      // }
+      // std::cout<<std::endl;
       CHECK(cudaMemcpy(&total_zeros, d_sum+n-1, sizeof(unsigned int), cudaMemcpyDeviceToHost));
       CHECK(cudaMemcpy(&mask_last, d_out+n-1, sizeof(unsigned int), cudaMemcpyDeviceToHost));
 
       total_zeros+=(mask_last==1)?1:0;
 
       getIndex<<<divup(n,block_size*len),block_size>>>(d_index, d_sum, d_out, len, n, total_zeros);
-      
+      // std::cout<<"index "<<std::endl;
+      // CHECK(cudaMemcpy(sum, d_index, n * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+      // for(int j=0;j<n;j++){
+      //   std::cout<<sum[j]<<" ";
+      // }
+      // std::cout<<std::endl;
       CHECK(cudaGetLastError());
+
       // // get mask for 1 and store in d_out
       // getMask<<<divup(n,block_size*len),block_size>>>(d_in, d_out, len, n, i, 1);
 
