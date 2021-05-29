@@ -59,6 +59,9 @@ __global__ void getIndex(unsigned int *d_index, unsigned int *d_sum, unsigned in
     unsigned int end=start+len;
     for (unsigned int i=start; i<end && i<n; i++){
       d_index[i]=d_mask[i]?d_sum[i]:i-d_sum[i]+total_pre;
+      if(d_index[i]>=n){
+        printf(" d_sum[i] : %d, total_pre : %d, d_mask[i] : %d \n", d_sum[i], total_pre, d_mask[i]);
+      }
       // if(d_mask[i]==1){
       //   d_index[i]=total_pre+d_sum[i];
       // }
@@ -145,13 +148,30 @@ __global__ void serialsum_accrossblock(unsigned int* sum,const int len, const un
   }
 }
 
+// __global__ void mergeblock(unsigned int* sum,const int len, const unsigned int n){
+//   unsigned int index = threadIdx.x + blockDim.x * blockIdx.x;
+//   if (index==0) return;  //the first block is not needed to merge
+//   int step=len*blockDim.x;
+//   int start=index*step+1; //exclusive
+//   int end=start+step-1;// -1 is important, this position has been added in serial sum
+//   int base=sum[start-1];//last element at last block
+//   for(int i=start; i<end && i<n; i++){
+//     sum[i]+=base;
+//   }
+// }
+
 __global__ void mergeblock(unsigned int* sum,const int len, const unsigned int n){
+  if (blockIdx.x==0) return;//the first block is not needed to merge
   unsigned int index = threadIdx.x + blockDim.x * blockIdx.x;
-  if (index==0) return;  //the first block is not needed to merge
-  int step=len*blockDim.x;
-  int start=index*step+1; //exclusive
-  int end=start+step-1;// -1 is important, this position has been added in serial sum
-  int base=sum[start-1];//last element at last block
+  int step=len;
+  unsigned int base_index=blockIdx.x*step*blockDim.x;
+  unsigned int base=sum[base_index];
+  int start=index*step; //only the first thread in block should excluded the first element
+  int end=start+step;
+  start=(start==base_index)?start+1:start;
+  
+  // int base=sum[start-1];//last element at last block
+  
   for(int i=start; i<end && i<n; i++){
     sum[i]+=base;
   }
