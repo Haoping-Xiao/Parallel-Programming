@@ -257,7 +257,7 @@ class TerminalReporter(Reporter):
 
                 if isinstance(output, NvprofRunnerOutput):
                     if output.nvprof:
-                        if 'gpu_trace' in output.nvprof:
+                        if output.nvprof.get('gpu_trace') is not None:
 
                             def safe_scale(value, scale):
                                 if value is not None:

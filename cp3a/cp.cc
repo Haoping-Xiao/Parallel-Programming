@@ -142,7 +142,7 @@ void correlate(int ny, int nx, const float *data, float *result) {
   asm("# loop ends here");
   std::sort(rows.begin(), rows.end());
 
-  // std::vector<double> result_temp(ny*ny,0);
+  std::vector<double> result_temp(ny*ny,0);
 
   for (int s=0; s<slice; s++){
     #pragma omp parallel for schedule(static,4)
@@ -176,18 +176,18 @@ void correlate(int ny, int nx, const float *data, float *result) {
           int ie=i*nd+id;
           int je=j*nd+jd;
           if(ie<ny && je<ny && ie<=je){
-            result[ie*ny+je]+=sum(vv[id][jd]);
+            result_temp[ie*ny+je]+=sum(vv[id][jd]);
           }
         }
       }
     }
   }
 
-  // #pragma omp parallel for
-  // for (int i=0; i<ny; i++){
-  //   for (int j=i; j<ny; j++){
-  //     result[i*ny+j]=result_temp[i*ny+j];
-  //   }
-  // }
+  #pragma omp parallel for
+  for (int i=0; i<ny; i++){
+    for (int j=i; j<ny; j++){
+      result[i*ny+j]=result_temp[i*ny+j];
+    }
+  }
   std::free(normalized);
 }

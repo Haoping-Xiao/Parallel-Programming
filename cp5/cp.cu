@@ -42,7 +42,11 @@ __global__ void correlate_gpu(int ny, int nx, const float*data, float *result, i
   int ja=threadIdx.y;
   int ic=blockIdx.x;
   int jc=blockIdx.y;
-  if(ic>jc){
+  // int i=ic*step+ib*nd+ia;
+  // int j=jc*step+jb*nd+ja;
+  // 0<=ia<=nd, 0<=ja<=nd
+  // if ic>jc , then i>j
+  if(ic>jc){ 
     for(int ib=0; ib<nd; ib++){
       for(int jb=0; jb<nd; jb++){
         int i=(ic*nd+ib)*nd+ia;
@@ -62,12 +66,9 @@ __global__ void correlate_gpu(int ny, int nx, const float*data, float *result, i
     }
 
     for (int k=0; k<nx; ++k){
-
       float x[nd];
       float y[nd];
-
       for(int ii=0; ii<nd; ii++){
-        // int i=ic*step+ib*nd+ia;
         int i=(ic*nd+ii)*nd+ia;
         int j=(jc*nd+ii)*nd+ja;
         x[ii]=data[k*new_ny +i];
@@ -78,10 +79,7 @@ __global__ void correlate_gpu(int ny, int nx, const float*data, float *result, i
 
       for(int ib=0; ib<nd; ib++){
         for(int jb=0; jb<nd; jb++){
-          // i<j
-          // if((ic*nd+ib)*nd+ia<=(jc*nd+jb)*nd+ja){
             v[ib][jb]+=x[ib]*y[jb];
-          // }
         }
       }
     }
@@ -143,11 +141,6 @@ __global__ void padding_transpose(int ny, int nx, const float*data, float* resul
 }
 
 
-
-
-
-
-
 static inline int divup(int a, int b) {
   return (a + b - 1)/b;
 }
@@ -175,52 +168,13 @@ void correlate(int ny, int nx, const float *data, float *result) {
   float *rGPU=NULL;
   CHECK(cudaMalloc((void**)&rGPU,ny*ny*sizeof(float)));
 
-
-  // float *avg=new float[ny]{0};
-  // float *normalized=new float[ny*nx]{0};
-  // float *sqrtSqureSum=new float[ny]{0};
-
-
-
-  // std::vector<float> avg(ny,0);
-  // std::vector<float> normalized(ny*nx,0);
-  // std::vector<float> sqrtSqureSum(ny,0);
-  // std::vector<float> transposed(nx*new_ny,0);
-
-  // for (int y=0; y<ny; ++y){
-  //   double temp=0;
-  //   for (int x=0; x<nx; ++x){
-  //     temp+=data[y*nx+x];
-  //   }
-  //   avg[y]=temp/nx;
-  // }
-  // for (int y=0; y<ny; ++y){
-  //   for (int x=0; x<nx; ++x){
-  //     normalized[y*nx+x]=data[y*nx+x]-avg[y];
-  //   }
-  // }
-  // // delete[] avg;
-  // for (int y=0; y<ny; ++y){
-  //   for (int x=0; x<nx; ++x){
-  //     sqrtSqureSum[y]+=pow(normalized[y*nx+x],2);
-  //   }
-  //   sqrtSqureSum[y]=sqrt(sqrtSqureSum[y]);
-  // }
-  // for (int y=0; y<ny; ++y){
-  //   for (int x=0; x<nx; ++x){
-  //     normalized[y*nx+x]/=sqrtSqureSum[y];
-  //   }
-  // }
   cuda_memcpy(dGPU,data,ny*nx,cudaMemcpyHostToDevice);
 
 
   {
-    // dim3 dimBlock(block_size,block_size);
-    // dim3 dimGrid(divup(ny,block_size*block_size),1);
     normalize<<<divup(ny,step),step>>>(ny,nx,dGPU,step);
   }
 
-  // cuda_memcpy(dGPU,normalized.data(),ny*nx,cudaMemcpyHostToDevice);
   // Run kernel to padding and transpose
   {
     dim3 dimBlock(64,1);
@@ -230,22 +184,6 @@ void correlate(int ny, int nx, const float *data, float *result) {
   }
 
 
-  // cuda_memcpy(transposed.data(), padding, new_ny * nx, cudaMemcpyDeviceToHost);
-  // std::cout << new_ny<<std::endl;
-  // std::cout << transposed.size()<<std::endl;
-  // for(int x=0;x<nx;x++){
-  //   for(int y=0;y<new_ny;y++){
-  //     std::cout<< transposed[x*new_ny+y] << " ";
-  //   }
-  //   std::cout<< std::endl<< "----"<< std::endl;
-  // }
-  
-  // for (int x=0;x<nx;++x){
-  //   for (int y=0; y<ny; ++y){
-  //     transposed[x*ny+y]=normalized[y*nx+x];
-  //   }
-  // }
-
   // Run kernel to calculate cp
   {
     dim3 dimBlock(block_size,block_size);
@@ -253,10 +191,7 @@ void correlate(int ny, int nx, const float *data, float *result) {
     correlate_gpu<<<dimGrid,dimBlock>>>(ny,nx,padding,rGPU,new_ny);
     CHECK(cudaGetLastError());
   }
-  
-
-
-  
+    
   
   cuda_memcpy(result, rGPU, ny * ny, cudaMemcpyDeviceToHost);
   // CHECK(cudaMemcpy(result, rGPU, ny * ny * sizeof(float), cudaMemcpyDeviceToHost));

@@ -28,11 +28,8 @@ static inline int divup(int a, int b) {
     return (a + b - 1)/b;
   }
 
-// get the 0 bit of each number by bit_shift
-// example: number : 10001, bit_shit: 1, One: 1,
-// 
-// it means check if the second bit is 1 or not.
-__global__ void getMask(data_t *d_in, unsigned int *d_out, const int len, const unsigned int n, data_t bit_shift, unsigned int One) {
+
+  __global__ void getMask(data_t *d_in, unsigned int *d_out, const int len, const unsigned int n, data_t bit_shift, unsigned int One) {
     unsigned int index = threadIdx.x + blockDim.x * blockIdx.x;
     data_t bit = 0;
     data_t one=1;
@@ -61,8 +58,13 @@ __global__ void getIndex(unsigned int *d_index, unsigned int *d_sum, unsigned in
         d_index[i]=total_pre+d_sum[i];
       }
     }
+    // if (index < n) {
+    //     if (d_mask[index] == 1) {
+    //         d_index[index] = total_pre + d_sum[index];
+    //     }
+    // }
 }
-
+// scatter<<<divup(n,block_size*len),block_size>>>(d_in, d_index, d_out, len, n);
 __global__ void scatter(data_t *d_in, unsigned int *d_index, data_t *d_out, const int len, const unsigned int n) {
     unsigned int index = threadIdx.x + blockDim.x * blockIdx.x;
 
@@ -73,18 +75,12 @@ __global__ void scatter(data_t *d_in, unsigned int *d_index, data_t *d_out, cons
     for(unsigned int i=start;i<end && i<n; i++ ){
       d_out[d_index[i]]=d_in[i];
     }
+    // if (index < n) {
+    //     d_out[d_index[index]] = d_in[index];
+    // }
 }
 
 
-// idea to do exclusive prefix is similar to my ppc course https://www.youtube.com/watch?v=HVhCtl96gUs
-// I will use y,z,s to specify which step I am in.
-// in particular, I split the whole array into multiple smaller array. each small array has [len] numbers
-// Thread level y: each thread will do addition sequentially. threads are working independently, dealing with [len] numbers.
-// Thread level z: each threads in the same block will do sequentially. threads are working independently, dealing with one block.
-// Thread level s: each thread will add the result from its previous thread. threads are working independently, dealing with [len] numbers.
-// Block level y: this will get prefix sum in block level. 
-// Block level z: only one block and one thread are used here, do addition sequentially.
-// Block level s: each threads will add the result from its previous block.
 __global__ void prefixsum(unsigned int* mask, unsigned int* output,const int len, const unsigned int n ){
   unsigned int index = threadIdx.x + blockDim.x * blockIdx.x;
   int step=len;
@@ -101,6 +97,7 @@ __global__ void prefixsum(unsigned int* mask, unsigned int* output,const int len
 __global__ void serialsum_accrossthread(unsigned int* sum,const int len, const unsigned int n){
   unsigned int index = threadIdx.x + blockDim.x * blockIdx.x;
   int step=len;
+  // int offset=2*step-1;
   int offset=2*step;
   unsigned int start=step*blockDim.x*index+offset;
   unsigned int end=step*blockDim.x*(index+1)+1;
@@ -124,31 +121,35 @@ __global__ void mergethread(unsigned int* sum,const int len, const unsigned int 
 
 }
 
-// void serialsum_accrossblock(unsigned int* sum,const int len, const unsigned int n, const int block_size){
-//   int step=len*block_size;//each block has step number
-//   int start=2*step;
-//   for(unsigned int i=start; i<n; i+=step){
-//     sum[i]+=sum[i-step];
-//   }
-// }
-
-
-
-__global__ void serialsum_accrossblock(unsigned int* sum,const int len, const unsigned int n, const int block_size){
-  //only one block and one thread
+void serialsum_accrossblock(unsigned int* sum,const int len, const unsigned int n, const int block_size){
   int step=len*block_size;//each block has step number
   int start=2*step;
   for(unsigned int i=start; i<n; i+=step){
     sum[i]+=sum[i-step];
   }
 }
+// __global__ void serialsum_accrossblock(unsigned int* sum,const int len, const unsigned int n){
+  
+
+//   unsigned int index = threadIdx.x + blockDim.x * blockIdx.x;
+//   int step=len*blockDim.x;
+//   int offset=2*step-1;
+//   unsigned int start= blockDim.x*step*index+offset;
+//   unsigned int end= blockDim.x*step*(index+1);
+//   for(unsigned int i=start; i<end && i<n; i+=step){
+//     sum[i]+=sum[i-step];
+//   }
+// }
 
 __global__ void mergeblock(unsigned int* sum,const int len, const unsigned int n){
   unsigned int index = threadIdx.x + blockDim.x * blockIdx.x;
   if (index==0) return;  //the first block is not needed to merge
+
   int step=len*blockDim.x;
+  
   int start=index*step+1; //exclusive
   int end=start+step-1;// -1 is important, this position has been added in serial sum
+  // int base=sum[blockIdx.x*len*blockDim.x-1];//last element at last block
   int base=sum[start-1];//last element at last block
   for(int i=start; i<end && i<n; i++){
     sum[i]+=base;
@@ -159,8 +160,8 @@ void psort(int n, data_t *data) {
   if(n<=0) return;
   // FIXME: Implement a more efficient parallel sorting algorithm for the GPU.
 
-  const int block_size=128;//64 threads per block;
-  const int len=2000; // add 1000 prefix sum per thread; 
+  const int block_size=64;//64 threads per block;
+  const int len=1000; // add 1000 prefix sum per thread; 
 
   data_t *d_temp;
   data_t *d_in=NULL;
@@ -175,7 +176,7 @@ void psort(int n, data_t *data) {
   unsigned int *d_index=NULL;
   CHECK(cudaMalloc((void**)&d_index,n*sizeof(unsigned int)));
 
-  // std::vector<unsigned int> inter_sum(n);
+  std::vector<unsigned int> inter_sum(n);
   // unsigned int inter_sum[n];
 
   cuda_memcpy(d_in,data,n,cudaMemcpyHostToDevice);
@@ -183,33 +184,48 @@ void psort(int n, data_t *data) {
   data_t bits=sizeof(data_t)*8;
 
 
+
   unsigned int total_zeros, mask_last;
-  //one pass here
+
   for(data_t i=0; i<bits; i++){
+      // get mask for 0 and store in d_out
+      // getMask<<<dimGrid, dimBlock>>>(d_in, d_out, n, i, 0);
       CHECK(cudaMemset(d_sum,0,n*sizeof(unsigned int)));
       getMask<<<divup(n,block_size*len),block_size>>>(d_in, d_out, len, n, i, 0);
-      CHECK(cudaGetLastError());
+      // std::cout<<"out"<<std::endl;
+      // CHECK(cudaMemcpy(index,d_out, n * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+      // for(int j=0; j<n; j++){
+      //   std::cout<< index[j] << " " ;
+      // }
+      // std::cout<< std::endl;
 
+      CHECK(cudaGetLastError());
       //inclusive prefix sum
+      
       prefixsum<<<divup(n,block_size*len),block_size>>>(d_out,d_sum,len,n);
       CHECK(cudaGetLastError());
       serialsum_accrossthread<<<divup(n,block_size*len*block_size),block_size>>>(d_sum,len,n);
       CHECK(cudaGetLastError());
       mergethread<<<divup(n,block_size*len),block_size>>>(d_sum,len,n);
       CHECK(cudaGetLastError());
-      serialsum_accrossblock<<<1,1>>>(d_sum, len, n, block_size);
-      CHECK(cudaGetLastError());
-      // CHECK(cudaMemcpy(inter_sum.data(), d_sum, n * sizeof(unsigned int), cudaMemcpyDeviceToHost));
-      // serialsum_accrossblock(inter_sum.data(), len, n, block_size);
-      // CHECK(cudaMemcpy(d_sum, inter_sum.data(),n * sizeof(unsigned int), cudaMemcpyHostToDevice));
+      CHECK(cudaMemcpy(inter_sum.data(), d_sum, n * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+      serialsum_accrossblock(inter_sum.data(), len, n, block_size);
+      CHECK(cudaMemcpy(d_sum, inter_sum.data(),n * sizeof(unsigned int), cudaMemcpyHostToDevice));
+      // serialsum_accrossblock<<<divup(n,block_size*len*block_size*block_size) ,block_size>>>(d_sum,len,n);
       // CHECK(cudaGetLastError());
       mergeblock<<<divup(n,block_size*len),block_size>>>(d_sum,len,n);
       CHECK(cudaGetLastError());
 
       CHECK(cudaMemcpy(&total_zeros, d_sum+n-1, sizeof(unsigned int), cudaMemcpyDeviceToHost));
       CHECK(cudaMemcpy(&mask_last, d_out+n-1, sizeof(unsigned int), cudaMemcpyDeviceToHost));
-
       total_zeros+=(mask_last==1)?1:0;
+      // std::cout<< "zeros" << total_zeros<< std::endl;
+      // std::cout<<"sum1"<<std::endl;
+      // CHECK(cudaMemcpy(index,d_sum, n * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+      // for(int j=0; j<n; j++){
+      //   std::cout<< index[j] << " " ;
+      // }
+      // std::cout<< std::endl;
 
       getIndex<<<divup(n,block_size*len),block_size>>>(d_index, d_sum, d_out, len, n, 0);
       
@@ -217,6 +233,13 @@ void psort(int n, data_t *data) {
       // get mask for 1 and store in d_out
       getMask<<<divup(n,block_size*len),block_size>>>(d_in, d_out, len, n, i, 1);
 
+      // std::cout<<"out"<<std::endl;
+      // CHECK(cudaMemcpy(index,d_out, n * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+      // for(int j=0; j<n; j++){
+      //   std::cout<< index[j] << " " ;
+      // }
+      // std::cout<< std::endl;
+
       CHECK(cudaGetLastError());
       //inclusive prefix sum
       CHECK(cudaMemset(d_sum,0,n*sizeof(unsigned int)));
@@ -227,22 +250,35 @@ void psort(int n, data_t *data) {
       mergethread<<<divup(n,block_size*len),block_size>>>(d_sum,len,n);
       CHECK(cudaGetLastError());
 
-      // CHECK(cudaMemcpy(inter_sum.data() , d_sum, n * sizeof(unsigned int), cudaMemcpyDeviceToHost));
-      // serialsum_accrossblock(inter_sum.data(), len, n, block_size);
-      // CHECK(cudaMemcpy(d_sum, inter_sum.data(),n * sizeof(unsigned int), cudaMemcpyHostToDevice));
-
-      serialsum_accrossblock<<<1,1>>>(d_sum, len, n, block_size);
-      CHECK(cudaGetLastError());
+      CHECK(cudaMemcpy(inter_sum.data() , d_sum, n * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+      serialsum_accrossblock(inter_sum.data(), len, n, block_size);
+      CHECK(cudaMemcpy(d_sum, inter_sum.data(),n * sizeof(unsigned int), cudaMemcpyHostToDevice));
+      // serialsum_accrossblock<<<divup(n,block_size*len*block_size*block_size) ,block_size>>>(d_sum,len,n);
+      // CHECK(cudaGetLastError());
       mergeblock<<<divup(n,block_size*len),block_size>>>(d_sum,len,n);
       CHECK(cudaGetLastError());
-
+      // std::cout<<"sum2"<<std::endl;
+      // CHECK(cudaMemcpy(index,d_sum, n * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+      // for(int j=0; j<n; j++){
+      //   std::cout<< index[j] << " " ;
+      // }
+      // std::cout<< std::endl;
       
       getIndex<<<divup(n,block_size*len),block_size>>>(d_index, d_sum, d_out, len, n, total_zeros);
       CHECK(cudaGetLastError());
-
+      // std::cout<<"index"<<std::endl;
+      // CHECK(cudaMemcpy(index,d_index, n * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+      // for(int j=0; j<n; j++){
+      //   std::cout<< index[j] << " " ;
+      // }
+      // std::cout<< std::endl;
 
       scatter<<<divup(n,block_size*len),block_size>>>(d_in, d_index, d_out_long, len, n);
-
+      // CHECK(cudaMemcpy(cal_result,d_out_long, n * sizeof(data_t), cudaMemcpyDeviceToHost));
+      // for(int j=0; j<n; j++){
+      //   std::cout<< cal_result[j] << " " ;
+      // }
+      // std::cout<< std::endl;
       CHECK(cudaGetLastError());
       //must swap pointers
       d_temp = d_in;
@@ -257,4 +293,48 @@ void psort(int n, data_t *data) {
   CHECK(cudaFree(d_sum));
   CHECK(cudaFree(d_index));
   // std::sort(data, data + n);
+}
+
+
+int main(){
+
+  const data_t n=10000000; //100000 number
+  std::vector<data_t> data(n);
+  // data_t * data= new data_t[n];
+  // data_t data[n];
+  // data_t result[n];
+  // data_t inter_result[n];
+  // data_t *cal_result=new data_t [n];
+
+  
+  for (data_t i=0; i<n; i++){
+    data[i]=i;
+  }
+
+  // for (data_t i=0; i<n; i++){
+  //   result[i]=i;
+  // }
+  psort(n, data.data());
+
+
+  // for(data_t i=0; i<n; i++){
+  //   if(result[i]==data[i]){
+  //     std::cout<<i<<"vs"<<data[i]<<std::endl;
+  //   }
+      
+  // }
+  // data_t i;
+  // for (i=0; i<n; i++){
+  //   if(result[i]!=data[i]){
+  //     std::cout<<"i: "<< i <<"error!"<<std::endl;
+  //     std::cout<<result[i]<<"vs"<<data[i]<<std::endl;
+  //     break;
+  //   }
+  // }
+  // if(i==n){
+  //   std::cout<<"correct"<<std::endl;
+  // }
+
+  return 0;
+
 }
