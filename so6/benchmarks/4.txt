@@ -1,2 +1,2 @@
-timeout 50.0
+timeout 100.0
 random 100000000 benchmark

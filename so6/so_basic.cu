@@ -253,32 +253,6 @@ void psort(int n, data_t *data) {
       // std::cout<<std::endl;
       CHECK(cudaGetLastError());
 
-      // // get mask for 1 and store in d_out
-      // getMask<<<divup(n,block_size*len),block_size>>>(d_in, d_out, len, n, i, 1);
-
-      // CHECK(cudaGetLastError());
-      // //inclusive prefix sum
-      // CHECK(cudaMemset(d_sum,0,n*sizeof(unsigned int)));
-      // prefixsum<<<divup(n,block_size*len),block_size>>>(d_out,d_sum,len,n);
-      // CHECK(cudaGetLastError());
-      // serialsum_accrossthread<<<divup(n,block_size*len*block_size),block_size>>>(d_sum,len,n);
-      // CHECK(cudaGetLastError());
-      // mergethread<<<divup(n,block_size*len),block_size>>>(d_sum,len,n);
-      // CHECK(cudaGetLastError());
-
-      // // CHECK(cudaMemcpy(inter_sum.data() , d_sum, n * sizeof(unsigned int), cudaMemcpyDeviceToHost));
-      // // serialsum_accrossblock(inter_sum.data(), len, n, block_size);
-      // // CHECK(cudaMemcpy(d_sum, inter_sum.data(),n * sizeof(unsigned int), cudaMemcpyHostToDevice));
-
-      // serialsum_accrossblock<<<1,1>>>(d_sum, len, n, block_size);
-      // CHECK(cudaGetLastError());
-      // mergeblock<<<divup(n,block_size*len),block_size>>>(d_sum,len,n);
-      // CHECK(cudaGetLastError());
-
-      
-      // getIndex<<<divup(n,block_size*len),block_size>>>(d_index, d_sum, d_out, len, n, total_zeros);
-      // CHECK(cudaGetLastError());
-
 
       scatter<<<divup(n,block_size*len),block_size>>>(d_in, d_index, d_out_long, len, n);
 
