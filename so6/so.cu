@@ -3,7 +3,20 @@
 #include <vector>
 #include <time.h>
 
+#define MAX_BLOCK_SZ 128
+#define NUM_BANKS 32
+#define LOG_NUM_BANKS 5
+
+#ifdef ZERO_BANK_CONFLICTS
+#define CONFLICT_FREE_OFFSET(n) \
+    ((n) >> NUM_BANKS + (n) >> (2 * LOG_NUM_BANKS))
+#else
+#define CONFLICT_FREE_OFFSET(n) ((n) >> LOG_NUM_BANKS)
+#endif
+
 typedef unsigned long long data_t;
+
+
 static inline void check(cudaError_t err, const char* context) {
     if (err != cudaSuccess) {
         std::cerr << "CUDA error: " << context << ": "
@@ -23,64 +36,6 @@ static inline int divup(int a, int b) {
     return (a + b - 1)/b;
   }
 
-// get the 0 bit of each number by bit_shift
-// example: number : 10001, bit_shit: 1, One: 1,
-// 
-// it means check if the second bit is 1 or not.
-__global__ void getMask(data_t *d_in, unsigned int *d_out, const int len, const unsigned int n, data_t bit_shift, unsigned int One) {
-    unsigned int index = threadIdx.x + blockDim.x * blockIdx.x;
-    data_t bit = 0;
-    data_t one=1;
-    data_t shift=one<<bit_shift;
-    unsigned int start=index*len;
-    if (start>=n) return;
-    unsigned int end=start+len;
-    for(unsigned int i=start;i<end && i<n; i++ ){
-      bit=d_in[i]&shift;
-      bit = (bit > 0) ? 1 : 0;
-      d_out[i] = (One ? bit : 1 - bit);
-    }
-}
-
-__global__ void getIndex(unsigned int *d_index, unsigned int *d_sum, unsigned int* d_mask, const int len, const unsigned int n,
-    unsigned int total_pre) {
-    unsigned int index = threadIdx.x + blockDim.x * blockIdx.x;
-    
-    unsigned int start=index*len;
-  
-    if (start>=n) return;
-    
-
-    unsigned int end=start+len;
-    for (unsigned int i=start; i<end && i<n; i++){
-      d_index[i]=d_mask[i]?d_sum[i]:i-d_sum[i]+total_pre;
-    }
-}
-
-__global__ void scatter(data_t *d_in, unsigned int *d_index, data_t *d_out, const int len, const unsigned int n) {
-    unsigned int index = threadIdx.x + blockDim.x * blockIdx.x;
-
-    unsigned int start=index*len;
-    if (start>=n) return;
-    unsigned int end=start+len;
-
-    for(unsigned int i=start;i<end && i<n; i++ ){
-      d_out[d_index[i]]=d_in[i];
-    }
-}
-
-
-
-#define MAX_BLOCK_SZ 128
-#define NUM_BANKS 32
-#define LOG_NUM_BANKS 5
-
-#ifdef ZERO_BANK_CONFLICTS
-#define CONFLICT_FREE_OFFSET(n) \
-    ((n) >> NUM_BANKS + (n) >> (2 * LOG_NUM_BANKS))
-#else
-#define CONFLICT_FREE_OFFSET(n) ((n) >> LOG_NUM_BANKS)
-#endif
 
 __global__
 void gpu_add_block_sums(data_t* const d_out,
