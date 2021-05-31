@@ -1,6 +1,6 @@
-[Parallel programming computer course](https://ppc-exercises.cs.aalto.fi/course/aalto2021) 2021 at Aalto.
+[Parallel programming computer course](https://ppc-exercises.cs.aalto.fi/course/aalto2021) 2021 at Aalto. This is an excellent course, covering intrustion parallelism, vectorization, multi-threads,  cache memory, reuse registers,  openmp, memory coalescing, cuda and so on!!!!!!
 
-
+Introduction:
 
 1. cp exercises: calculate [Pearson correlation coefficient](https://en.wikipedia.org/wiki/Pearson_correlation_coefficient). It essentially is a matrix multiplication.
 2. is exercises: image segmentation. Find the best way to partition the given figure in two parts: a monochromatic rectangle and a monochromatic background. The objective is to minimize the sum of squared errors.
@@ -9,8 +9,6 @@
 5. Others: test code for debugging.
 
 
-
-This is an excellent course, covering intrustion parallelism, vectorization, multi-threads,  cache memory, reuse registers,  openmp, memory coalescing, cuda and so on!!!!!!
 
 
 
