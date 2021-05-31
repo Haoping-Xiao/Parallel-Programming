@@ -463,10 +463,103 @@ __global__ void gpu_glbl_shuffle(data_t* d_out,
 
 
 
+__global__ void order_checking_local(data_t* d_in, data_t* d_out, data_t d_in_len, data_t max_elems_per_block)
+{
+
+    extern __shared__ data_t shmem[]; //dynamic shared memory 
+                                      //https://developer.nvidia.com/blog/using-shared-memory-cuda-cc/
+                                      //its length is (max_elems_per_block+ 1)+ max_elems_per_block
+                                      // 1 is the first element in the next block, the last max_elems_per_block is comparison result
+    
+    data_t* s_data=shmem;
+    data_t* s_comparison=&s_data[max_elems_per_block+1];
 
 
+    data_t thid=threadIdx.x;// from 0 to max_elems_per_block-1
+
+     // Copy block's portion of global input data to shared memory
+     // one thread for one number
+    data_t cpy_idx = max_elems_per_block * blockIdx.x + thid;
+
+    
+    
+    if(cpy_idx<d_in_len)
+        s_data[thid]=d_in[cpy_idx];
+    else
+        s_data[thid]=d_in[d_in_len-1]+(cpy_idx-d_in_len);//padding ensure is greater or equal to the previous one
+    
+    if(thid==0){
+        data_t next_cpy_idx= max_elems_per_block *(blockIdx.x+1);//the first element in the next block
+        if(next_cpy_idx<d_in_len)
+            s_data[max_elems_per_block]=d_in[next_cpy_idx];
+        else
+            s_data[max_elems_per_block]=d_in[d_in_len-1]+(next_cpy_idx-d_in_len);//padding ensure is greater or equal to the previous one
+    }
+    //Wait for all threads to finish reading
+    __syncthreads();
+
+    //Perform order checking
+    s_comparison[thid]=s_data[thid]>s_data[thid+1];
+    //Wait for all threads to finish reading
+    __syncthreads();
+
+    //Perform reduction sum
+    //Scan comparison result (Hillis-Steele)
+    int partner=0;
+    data_t sum=0;
+    data_t max_steps = (data_t) log2f(max_elems_per_block);
+
+    for (data_t d = 0; d < max_steps; d++) {
+        partner = thid - (1 << d);
+        if (partner >= 0) {
+            sum = s_comparison[thid] + s_comparison[partner];
+        }
+        else {
+            sum = s_comparison[thid];
+        }
+        __syncthreads();
+        s_comparison[thid] = sum;
+        __syncthreads();
+    }
+    //the last element of s_comparison is an exclusive sum
+    //if 0, then the current block is sorted
+    d_out[blockIdx.x]=s_comparison[max_elems_per_block-1];
+}
 
 
+bool partial_order_checking(data_t* d_in, data_t d_in_len)
+{   //checing if d_in from 0 to d_in_len-1 is sorted
+
+    const int block_size=MAX_BLOCK_SZ;//64 threads per block;
+    const int len=block_size; // max_elems_per_block
+    const int grid_size=divup(d_in_len,len);
+    data_t shmem_sz =(len+len+1)*sizeof(data_t);//(max_elems_per_block+ 1)+ max_elems_per_block
+
+    data_t *d_out=NULL;
+    CHECK(cudaMalloc((void**)&d_out,grid_size*sizeof(data_t)));// each block will yeild one result, sorted or not.
+
+    order_checking_local<<<grid_size, block_size, shmem_sz>>>(d_in, d_out, d_in_len, len);
+
+    std::vector <data_t> d_out_cpu(grid_size);
+    cuda_memcpy(d_out_cpu.data(), d_out, grid_size, cudaMemcpyDeviceToHost);
+
+    //The all_of algorithm has the added benefit that it may exit early
+    //if one of the elements isn't 0 and save some unnecessary checking.
+    //if all elements are 0, then sorted
+    bool sorted = std::all_of(d_out_cpu.begin(), d_out_cpu.end(), [](data_t i) { return i==0; });
+    CHECK(cudaFree(d_out));
+    return sorted;
+}
+
+bool order_checking(data_t* d_in, data_t d_in_len)
+{
+    //do the first half checking
+    data_t half=d_in_len/2;
+    if(partial_order_checking(d_in,half))
+        return partial_order_checking(d_in+half-1,d_in_len-half+1);
+    else
+        return false;
+}
 
 
 void psort(int n, data_t *data) {
@@ -515,9 +608,20 @@ void psort(int n, data_t *data) {
                           * sizeof(data_t);//share memory size
   
   
-
+//   clock_t cpu_startTime;
   for (data_t shift_width = 0; shift_width <= sizeof(data_t)*8 ; shift_width += 2)
-  {
+  {     
+      
+    //   cpu_startTime=clock();
+      if(order_checking(d_in,n))
+      {
+        //early stop if sorted, based on experiments, oder checking is indeed inexpensive.
+        //but it usually save 1 iteration only in our test case.
+        std::cout<<"order checking save "<< (64-shift_width)/2+1 <<" iteration" << std::endl; 
+        std::cout<< "early stopping..." <<std::endl;
+        break;
+      }
+    //   std::cout<< "order checking spend: "<<(clock()-cpu_startTime)/CLOCKS_PER_SEC <<"s"<<std::endl;
       gpu_radix_sort_local<<<grid_size, block_size, shmem_sz>>>(d_out, 
                                                                 d_prefix_sums, 
                                                                 d_block_sums, 
