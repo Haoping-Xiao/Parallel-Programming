@@ -1,12 +1,9 @@
 #include <algorithm>
 #include <iostream>
 #include <vector>
-
-
-
+#include <time.h>
 
 typedef unsigned long long data_t;
-
 static inline void check(cudaError_t err, const char* context) {
     if (err != cudaSuccess) {
         std::cerr << "CUDA error: " << context << ": "
@@ -14,9 +11,7 @@ static inline void check(cudaError_t err, const char* context) {
         std::exit(EXIT_FAILURE);
     }
 }
-
 #define CHECK(x) check(x, #x)
-
 
 
 template <class T>
@@ -28,8 +23,11 @@ static inline int divup(int a, int b) {
     return (a + b - 1)/b;
   }
 
-
-  __global__ void getMask(data_t *d_in, unsigned int *d_out, const int len, const unsigned int n, data_t bit_shift, unsigned int One) {
+// get the 0 bit of each number by bit_shift
+// example: number : 10001, bit_shit: 1, One: 1,
+// 
+// it means check if the second bit is 1 or not.
+__global__ void getMask(data_t *d_in, unsigned int *d_out, const int len, const unsigned int n, data_t bit_shift, unsigned int One) {
     unsigned int index = threadIdx.x + blockDim.x * blockIdx.x;
     data_t bit = 0;
     data_t one=1;
@@ -44,27 +42,21 @@ static inline int divup(int a, int b) {
     }
 }
 
-__global__ void getIndex(unsigned int *d_index, unsigned int *d_sum, unsigned int *d_mask, const int len, const unsigned int n,
+__global__ void getIndex(unsigned int *d_index, unsigned int *d_sum, unsigned int* d_mask, const int len, const unsigned int n,
     unsigned int total_pre) {
     unsigned int index = threadIdx.x + blockDim.x * blockIdx.x;
     
     unsigned int start=index*len;
   
-    if (start>=n || total_pre==n) return;
+    if (start>=n) return;
     
+
     unsigned int end=start+len;
     for (unsigned int i=start; i<end && i<n; i++){
-      if(d_mask[i]==1){
-        d_index[i]=total_pre+d_sum[i];
-      }
+      d_index[i]=d_mask[i]?d_sum[i]:i-d_sum[i]+total_pre;
     }
-    // if (index < n) {
-    //     if (d_mask[index] == 1) {
-    //         d_index[index] = total_pre + d_sum[index];
-    //     }
-    // }
 }
-// scatter<<<divup(n,block_size*len),block_size>>>(d_in, d_index, d_out, len, n);
+
 __global__ void scatter(data_t *d_in, unsigned int *d_index, data_t *d_out, const int len, const unsigned int n) {
     unsigned int index = threadIdx.x + blockDim.x * blockIdx.x;
 
@@ -75,230 +67,588 @@ __global__ void scatter(data_t *d_in, unsigned int *d_index, data_t *d_out, cons
     for(unsigned int i=start;i<end && i<n; i++ ){
       d_out[d_index[i]]=d_in[i];
     }
-    // if (index < n) {
-    //     d_out[d_index[index]] = d_in[index];
-    // }
 }
 
 
-__global__ void prefixsum(unsigned int* mask, unsigned int* output,const int len, const unsigned int n ){
-  unsigned int index = threadIdx.x + blockDim.x * blockIdx.x;
-  int step=len;
-  int start=index*len+1;//exclusive
-  if (start>n) return; //exclusive, could equal to n
-  int end=start+step;
-  output[start]=mask[start-1];
-  for(unsigned int i=start+1;i<end&&i<n;i++){
-    output[i]+=output[i-1]+mask[i-1];//exclusive, therefore mask[i-1]
+
+#define MAX_BLOCK_SZ 128
+#define NUM_BANKS 32
+#define LOG_NUM_BANKS 5
+
+#ifdef ZERO_BANK_CONFLICTS
+#define CONFLICT_FREE_OFFSET(n) \
+    ((n) >> NUM_BANKS + (n) >> (2 * LOG_NUM_BANKS))
+#else
+#define CONFLICT_FREE_OFFSET(n) ((n) >> LOG_NUM_BANKS)
+#endif
+
+__global__
+void gpu_add_block_sums(data_t* const d_out,
+    const data_t* const d_in,
+    data_t* const d_block_sums,
+    const size_t numElems)
+{
+    data_t d_block_sum_val = d_block_sums[blockIdx.x];
+
+    // Simple implementation's performance is not significantly (if at all)
+    //  better than previous verbose implementation
+    data_t cpy_idx = 2 * blockIdx.x * blockDim.x + threadIdx.x;
+    if (cpy_idx < numElems)
+    {
+        d_out[cpy_idx] = d_in[cpy_idx] + d_block_sum_val;
+        if (cpy_idx + blockDim.x < numElems)
+            d_out[cpy_idx + blockDim.x] = d_in[cpy_idx + blockDim.x] + d_block_sum_val;
+    }
+}
+
+
+__global__
+void gpu_prescan(data_t* const d_out,
+    const data_t* const d_in,
+    data_t* const d_block_sums,
+    const data_t len,
+    const data_t shmem_sz,
+    const data_t max_elems_per_block)
+{
+    // Allocated on invocation
+    extern __shared__ data_t s_out[];
+
+    int thid = threadIdx.x;
+    int ai = thid;
+    int bi = thid + blockDim.x;
+
+    // Zero out the shared memory
+    // Helpful especially when input size is not power of two
+    s_out[thid] = 0;
+    s_out[thid + blockDim.x] = 0;
+    // If CONFLICT_FREE_OFFSET is used, shared memory size
+    //  must be a 2 * blockDim.x + blockDim.x/num_banks
+    s_out[thid + blockDim.x + (blockDim.x >> LOG_NUM_BANKS)] = 0;
+    
+    __syncthreads();
+    
+    // Copy d_in to shared memory
+    // Note that d_in's elements are scattered into shared memory
+    //  in light of avoiding bank conflicts
+    data_t cpy_idx = max_elems_per_block * blockIdx.x + threadIdx.x;
+    if (cpy_idx < len)
+    {
+        s_out[ai + CONFLICT_FREE_OFFSET(ai)] = d_in[cpy_idx];
+        if (cpy_idx + blockDim.x < len)
+            s_out[bi + CONFLICT_FREE_OFFSET(bi)] = d_in[cpy_idx + blockDim.x];
+    }
+
+    // For both upsweep and downsweep:
+    // Sequential indices with conflict free padding
+    //  Amount of padding = target index / num banks
+    //  This "shifts" the target indices by one every multiple
+    //   of the num banks
+    // offset controls the stride and starting index of 
+    //  target elems at every iteration
+    // d just controls which threads are active
+    // Sweeps are pivoted on the last element of shared memory
+
+    // Upsweep/Reduce step
+    int offset = 1;
+    for (int d = max_elems_per_block >> 1; d > 0; d >>= 1)
+    {
+        __syncthreads();
+
+        if (thid < d)
+        {
+            int ai = offset * ((thid << 1) + 1) - 1;
+            int bi = offset * ((thid << 1) + 2) - 1;
+            ai += CONFLICT_FREE_OFFSET(ai);
+            bi += CONFLICT_FREE_OFFSET(bi);
+
+            s_out[bi] += s_out[ai];
+        }
+        offset <<= 1;
+    }
+
+    // Save the total sum on the global block sums array
+    // Then clear the last element on the shared memory
+    if (thid == 0) 
+    { 
+        d_block_sums[blockIdx.x] = s_out[max_elems_per_block - 1 
+            + CONFLICT_FREE_OFFSET(max_elems_per_block - 1)];
+        s_out[max_elems_per_block - 1 
+            + CONFLICT_FREE_OFFSET(max_elems_per_block - 1)] = 0;
+    }
+
+    // Downsweep step
+    for (int d = 1; d < max_elems_per_block; d <<= 1)
+    {
+        offset >>= 1;
+        __syncthreads();
+
+        if (thid < d)
+        {
+            int ai = offset * ((thid << 1) + 1) - 1;
+            int bi = offset * ((thid << 1) + 2) - 1;
+            ai += CONFLICT_FREE_OFFSET(ai);
+            bi += CONFLICT_FREE_OFFSET(bi);
+
+            data_t temp = s_out[ai];
+            s_out[ai] = s_out[bi];
+            s_out[bi] += temp;
+        }
+    }
+    __syncthreads();
+
+    // Copy contents of shared memory to global memory
+    if (cpy_idx < len)
+    {
+        d_out[cpy_idx] = s_out[ai + CONFLICT_FREE_OFFSET(ai)];
+        if (cpy_idx + blockDim.x < len)
+            d_out[cpy_idx + blockDim.x] = s_out[bi + CONFLICT_FREE_OFFSET(bi)];
+    }
+}
+ 
+void sum_scan_blelloch(data_t* const d_out,
+    const data_t* const d_in,
+    const size_t numElems)
+{
+    // Zero out d_out
+    CHECK(cudaMemset(d_out, 0, numElems * sizeof(data_t)));
+
+    // Set up number of threads and blocks
+    
+    data_t block_sz = MAX_BLOCK_SZ / 2;
+    data_t max_elems_per_block = 2 * block_sz; // due to binary tree nature of algorithm
+
+    // If input size is not power of two, the remainder will still need a whole block
+    // Thus, number of blocks must be the ceiling of input size / max elems that a block can handle
+    //data_t grid_sz = (data_t) std::ceil((double) numElems / (double) max_elems_per_block);
+    // UPDATE: Instead of using ceiling and risking miscalculation due to precision, just automatically  
+    //  add 1 to the grid size when the input size cannot be divided cleanly by the block's capacity
+    data_t grid_sz = numElems / max_elems_per_block;
+    // Take advantage of the fact that integer division drops the decimals
+    if (numElems % max_elems_per_block != 0) 
+        grid_sz += 1;
+
+    // Conflict free padding requires that shared memory be more than 2 * block_sz
+    data_t shmem_sz = max_elems_per_block + ((max_elems_per_block) >> LOG_NUM_BANKS);
+
+    // Allocate memory for array of total sums produced by each block
+    // Array length must be the same as number of blocks
+    data_t* d_block_sums;
+    CHECK(cudaMalloc(&d_block_sums, sizeof(data_t) * grid_sz));
+    CHECK(cudaMemset(d_block_sums, 0, sizeof(data_t) * grid_sz));
+
+    // Sum scan data allocated to each block
+    //gpu_sum_scan_blelloch<<<grid_sz, block_sz, sizeof(data_t) * max_elems_per_block >>>(d_out, d_in, d_block_sums, numElems);
+    gpu_prescan<<<grid_sz, block_sz, sizeof(data_t) * shmem_sz>>>(d_out, 
+                                                                    d_in, 
+                                                                    d_block_sums, 
+                                                                    numElems, 
+                                                                    shmem_sz,
+                                                                    max_elems_per_block);
+
+    // Sum scan total sums produced by each block
+    // Use basic implementation if number of total sums is <= 2 * block_sz
+    //  (This requires only one block to do the scan)
+    if (grid_sz <= max_elems_per_block)
+    {
+        data_t* d_dummy_blocks_sums;
+        CHECK(cudaMalloc(&d_dummy_blocks_sums, sizeof(data_t)));
+        CHECK(cudaMemset(d_dummy_blocks_sums, 0, sizeof(data_t)));
+        //gpu_sum_scan_blelloch<<<1, block_sz, sizeof(data_t) * max_elems_per_block>>>(d_block_sums, d_block_sums, d_dummy_blocks_sums, grid_sz);
+        gpu_prescan<<<1, block_sz, sizeof(data_t) * shmem_sz>>>(d_block_sums, 
+                                                                    d_block_sums, 
+                                                                    d_dummy_blocks_sums, 
+                                                                    grid_sz, 
+                                                                    shmem_sz,
+                                                                    max_elems_per_block);
+        CHECK(cudaFree(d_dummy_blocks_sums));
+    }
+    // Else, recurse on this same function as you'll need the full-blown scan
+    //  for the block sums
+    else
+    {
+        data_t* d_in_block_sums;
+        CHECK(cudaMalloc(&d_in_block_sums, sizeof(data_t) * grid_sz));
+        CHECK(cudaMemcpy(d_in_block_sums, d_block_sums, sizeof(data_t) * grid_sz, cudaMemcpyDeviceToDevice));
+        sum_scan_blelloch(d_block_sums, d_in_block_sums, grid_sz);
+        CHECK(cudaFree(d_in_block_sums));
+    }
+    
+    // Add each block's total sum to its scan output
+    // in order to get the final, global scanned array
+    gpu_add_block_sums<<<grid_sz, block_sz>>>(d_out, d_out, d_block_sums, numElems);
+
+    CHECK(cudaFree(d_block_sums));
+}
+
+
+
+
+__global__ void gpu_radix_sort_local(data_t* d_out_sorted,
+  data_t* d_prefix_sums,
+  data_t* d_block_sums,
+  data_t input_shift_width,
+  data_t* d_in,
+  data_t d_in_len,
+  data_t max_elems_per_block)
+{
+  // need shared memory array for:
+  // - block's share of the input data (local sort will be put here too)
+  // - mask outputs
+  // - scanned mask outputs
+  // - merged scaned mask outputs ("local prefix sum")
+  // - local sums of scanned mask outputs
+  // - scanned local sums of scanned mask outputs
+
+  // for all radix combinations:
+  //  build mask output for current radix combination
+  //  scan mask ouput
+  //  store needed value from current prefix sum array to merged prefix sum array
+  //  store total sum of mask output (obtained from scan) to global block sum array
+  // calculate local sorted address from local prefix sum and scanned mask output's total sums
+  // shuffle input block according to calculated local sorted addresses
+  // shuffle local prefix sums according to calculated local sorted addresses
+  // copy locally sorted array back to global memory
+  // copy local prefix sum array back to global memory
+
+  extern __shared__ data_t shmem[];
+  data_t* s_data = shmem;
+  // s_mask_out[] will be scanned in place
+  data_t s_mask_out_len = max_elems_per_block + 1;
+  data_t* s_mask_out = &s_data[max_elems_per_block];
+  data_t* s_merged_scan_mask_out = &s_mask_out[s_mask_out_len];
+  data_t* s_mask_out_sums = &s_merged_scan_mask_out[max_elems_per_block];
+  data_t* s_scan_mask_out_sums = &s_mask_out_sums[4];
+
+  data_t thid = threadIdx.x;
+
+  // Copy block's portion of global input data to shared memory
+  data_t cpy_idx = max_elems_per_block * blockIdx.x + thid;
+  if (cpy_idx < d_in_len)
+      s_data[thid] = d_in[cpy_idx];
+  else
+      s_data[thid] = 0;
+
+  __syncthreads();
+
+  // To extract the correct 2 bits, we first shift the number
+  //  to the right until the correct 2 bits are in the 2 LSBs,
+  //  then mask on the number with 11 (3) to remove the bits
+  //  on the left
+  data_t t_data = s_data[thid];
+  data_t t_2bit_extract = (t_data >> input_shift_width) & 3;
+
+  for (data_t i = 0; i < 4; ++i)
+  {
+      // Zero out s_mask_out
+      s_mask_out[thid] = 0;
+      if (thid == 0)
+          s_mask_out[s_mask_out_len - 1] = 0;
+
+      __syncthreads();
+
+      // build bit mask output(0 to 3, same as input data in paper)
+      bool val_equals_i = false;
+      if (cpy_idx < d_in_len)
+      {
+          val_equals_i = t_2bit_extract == i;
+          s_mask_out[thid] = val_equals_i;
+      }
+      __syncthreads();
+
+      // Scan mask outputs (Hillis-Steele)
+      int partner = 0;
+      data_t sum = 0;
+      data_t max_steps = (data_t) log2f(max_elems_per_block);
+      for (data_t d = 0; d < max_steps; d++) {
+          partner = thid - (1 << d);
+          if (partner >= 0) {
+              sum = s_mask_out[thid] + s_mask_out[partner];
+          }
+          else {
+              sum = s_mask_out[thid];
+          }
+          __syncthreads();
+          s_mask_out[thid] = sum;
+          __syncthreads();
+      }
+
+      // Shift elements to produce the same effect as exclusive scan
+      data_t cpy_val = 0;
+      cpy_val = s_mask_out[thid];
+      __syncthreads();
+      s_mask_out[thid + 1] = cpy_val;
+      __syncthreads();
+
+      if (thid == 0)
+      {
+          // Zero out first element to produce the same effect as exclusive scan
+          s_mask_out[0] = 0;
+          data_t total_sum = s_mask_out[s_mask_out_len - 1];
+          s_mask_out_sums[i] = total_sum;
+          d_block_sums[i * gridDim.x + blockIdx.x] = total_sum;
+      }
+      __syncthreads();
+
+      if (val_equals_i && (cpy_idx < d_in_len))
+      {
+          s_merged_scan_mask_out[thid] = s_mask_out[thid];
+      }
+
+      __syncthreads();
+  }//end loop here. complete local prefix sum
+
+  // Scan mask output sums
+  // Just do a naive scan since the array is really small
+  if (thid == 0)
+  {
+      data_t run_sum = 0;
+      for (data_t i = 0; i < 4; ++i)
+      {
+          s_scan_mask_out_sums[i] = run_sum;
+          run_sum += s_mask_out_sums[i];
+      }
+  }// use s_scan_mask_out_sums for local shuffle, get index for each input data(0~3)
+
+  __syncthreads();
+
+  if (cpy_idx < d_in_len)
+  {
+      // Calculate the new indices of the input elements for sorting
+      data_t t_prefix_sum = s_merged_scan_mask_out[thid];
+      data_t new_pos = t_prefix_sum + s_scan_mask_out_sums[t_2bit_extract];
+      
+      __syncthreads();
+
+      // Shuffle the block's input elements to actually sort them
+      // Do this step for greater global memory transfer coalescing
+      //  in next step
+      s_data[new_pos] = t_data; //0~3
+      s_merged_scan_mask_out[new_pos] = t_prefix_sum;
+      
+      __syncthreads();
+
+      // Copy block - wise prefix sum results to global memory
+      // Copy block-wise sort results to global 
+      d_prefix_sums[cpy_idx] = s_merged_scan_mask_out[thid];
+      d_out_sorted[cpy_idx] = s_data[thid];
+  }
+}
+
+__global__ void gpu_glbl_shuffle(data_t* d_out,
+  data_t* d_in,
+  data_t* d_scan_block_sums,
+  data_t* d_prefix_sums,
+  data_t input_shift_width,
+  data_t d_in_len,
+  data_t max_elems_per_block)
+{
+  // d_scan_block_sums is prefix block sum
+  // d_prefix_sums is local prefix sum
+
+  data_t thid = threadIdx.x;
+  data_t cpy_idx = max_elems_per_block * blockIdx.x + thid;
+
+  if (cpy_idx < d_in_len)
+  {
+      data_t t_data = d_in[cpy_idx];
+      data_t t_2bit_extract = (t_data >> input_shift_width) & 3;
+      data_t t_prefix_sum = d_prefix_sums[cpy_idx];
+      data_t data_glbl_pos = d_scan_block_sums[t_2bit_extract * gridDim.x + blockIdx.x]
+          + t_prefix_sum; // max pos is less than 100,000,000 in our test case, data_t is sufficient
+      __syncthreads();
+      d_out[data_glbl_pos] = t_data;
   }
 }
 
 
-__global__ void serialsum_accrossthread(unsigned int* sum,const int len, const unsigned int n){
-  unsigned int index = threadIdx.x + blockDim.x * blockIdx.x;
-  int step=len;
-  // int offset=2*step-1;
-  int offset=2*step;
-  unsigned int start=step*blockDim.x*index+offset;
-  unsigned int end=step*blockDim.x*(index+1)+1;
-  for(unsigned int i=start;i<end && i<n; i+=step){
-    sum[i]+=sum[i-step];
-  }
+
+
+__global__ void order_checking_local(data_t* d_in, data_t* d_out, data_t d_in_len, data_t max_elems_per_block)
+{
+
+    extern __shared__ data_t shmem[]; //dynamic shared memory 
+                                      //https://developer.nvidia.com/blog/using-shared-memory-cuda-cc/
+                                      //its length is (max_elems_per_block+ 1)+ max_elems_per_block
+                                      // 1 is the first element in the next block, the last max_elems_per_block is comparison result
+    
+    data_t* s_data=shmem;
+    data_t* s_comparison=&s_data[max_elems_per_block+1];
+
+
+    data_t thid=threadIdx.x;// from 0 to max_elems_per_block-1
+
+     // Copy block's portion of global input data to shared memory
+     // one thread for one number
+    data_t cpy_idx = max_elems_per_block * blockIdx.x + thid;
+
+    
+    
+    if(cpy_idx<d_in_len)
+        s_data[thid]=d_in[cpy_idx];
+    else
+        s_data[thid]=d_in[d_in_len-1]+(cpy_idx-d_in_len);//padding ensure is greater or equal to the previous one
+    
+    if(thid==0){
+        data_t next_cpy_idx= max_elems_per_block *(blockIdx.x+1);//the first element in the next block
+        if(next_cpy_idx<d_in_len)
+            s_data[max_elems_per_block]=d_in[next_cpy_idx];
+        else
+            s_data[max_elems_per_block]=d_in[d_in_len-1]+(next_cpy_idx-d_in_len);//padding ensure is greater or equal to the previous one
+    }
+    //Wait for all threads to finish reading
+    __syncthreads();
+
+    //Perform order checking
+    s_comparison[thid]=s_data[thid]>s_data[thid+1];
+    //Wait for all threads to finish reading
+    __syncthreads();
+
+    //Perform reduction sum
+    //Scan comparison result (Hillis-Steele)
+    int partner=0;
+    data_t sum=0;
+    data_t max_steps = (data_t) log2f(max_elems_per_block);
+
+    for (data_t d = 0; d < max_steps; d++) {
+        partner = thid - (1 << d);
+        if (partner >= 0) {
+            sum = s_comparison[thid] + s_comparison[partner];
+        }
+        else {
+            sum = s_comparison[thid];
+        }
+        __syncthreads();
+        s_comparison[thid] = sum;
+        __syncthreads();
+    }
+    //the last element of s_comparison is an exclusive sum
+    //if 0, then the current block is sorted
+    d_out[blockIdx.x]=s_comparison[max_elems_per_block-1];
 }
 
-__global__ void mergethread(unsigned int* sum,const int len, const unsigned int n){
-  if (threadIdx.x==0) return;
 
-  unsigned int index = threadIdx.x + blockDim.x * blockIdx.x;
-  int step=len;
-  unsigned int start=index*step+1;//exclusive
-  unsigned int end=start+step-1; // -1 is important, this position has been added in serial sum
-  unsigned int base=sum[start-1];
+bool partial_order_checking(data_t* d_in, data_t d_in_len)
+{   //checing if d_in from 0 to d_in_len-1 is sorted
 
-  for(unsigned int i=start; i<end && i<n; i++){
-    sum[i]+=base;
-  }
+    const int block_size=MAX_BLOCK_SZ;//64 threads per block;
+    const int len=block_size; // max_elems_per_block
+    const int grid_size=divup(d_in_len,len);
+    data_t shmem_sz =(len+len+1)*sizeof(data_t);//(max_elems_per_block+ 1)+ max_elems_per_block
 
+    data_t *d_out=NULL;
+    CHECK(cudaMalloc((void**)&d_out,grid_size*sizeof(data_t)));// each block will yeild one result, sorted or not.
+
+    order_checking_local<<<grid_size, block_size, shmem_sz>>>(d_in, d_out, d_in_len, len);
+
+    std::vector <data_t> d_out_cpu(grid_size);
+    cuda_memcpy(d_out_cpu.data(), d_out, grid_size, cudaMemcpyDeviceToHost);
+
+    //The all_of algorithm has the added benefit that it may exit early
+    //if one of the elements isn't 0 and save some unnecessary checking.
+    //if all elements are 0, then sorted
+    bool sorted = std::all_of(d_out_cpu.begin(), d_out_cpu.end(), [](data_t i) { return i==0; });
+    CHECK(cudaFree(d_out));
+    return sorted;
 }
 
-void serialsum_accrossblock(unsigned int* sum,const int len, const unsigned int n, const int block_size){
-  int step=len*block_size;//each block has step number
-  int start=2*step;
-  for(unsigned int i=start; i<n; i+=step){
-    sum[i]+=sum[i-step];
-  }
-}
-// __global__ void serialsum_accrossblock(unsigned int* sum,const int len, const unsigned int n){
-  
-
-//   unsigned int index = threadIdx.x + blockDim.x * blockIdx.x;
-//   int step=len*blockDim.x;
-//   int offset=2*step-1;
-//   unsigned int start= blockDim.x*step*index+offset;
-//   unsigned int end= blockDim.x*step*(index+1);
-//   for(unsigned int i=start; i<end && i<n; i+=step){
-//     sum[i]+=sum[i-step];
-//   }
-// }
-
-__global__ void mergeblock(unsigned int* sum,const int len, const unsigned int n){
-  unsigned int index = threadIdx.x + blockDim.x * blockIdx.x;
-  if (index==0) return;  //the first block is not needed to merge
-
-  int step=len*blockDim.x;
-  
-  int start=index*step+1; //exclusive
-  int end=start+step-1;// -1 is important, this position has been added in serial sum
-  // int base=sum[blockIdx.x*len*blockDim.x-1];//last element at last block
-  int base=sum[start-1];//last element at last block
-  for(int i=start; i<end && i<n; i++){
-    sum[i]+=base;
-  }
+bool order_checking(data_t* d_in, data_t d_in_len)
+{
+    //do the first half checking
+    data_t half=d_in_len/2;
+    if(partial_order_checking(d_in,half))
+        return partial_order_checking(d_in+half-1,d_in_len-half+1);
+    else
+        return false;
 }
 
 void psort(int n, data_t *data) {
   if(n<=0) return;
   // FIXME: Implement a more efficient parallel sorting algorithm for the GPU.
 
-  const int block_size=64;//64 threads per block;
-  const int len=1000; // add 1000 prefix sum per thread; 
+  const int block_size=MAX_BLOCK_SZ;//64 threads per block;
+  const int len=block_size; // max_elems_per_block
+  const int grid_size=divup(n,len);
 
-  data_t *d_temp;
   data_t *d_in=NULL;
   CHECK(cudaMalloc((void**)&d_in,n*sizeof(data_t)));
-
-  data_t *d_out_long=NULL;
-  CHECK(cudaMalloc((void**)&d_out_long,n*sizeof(data_t)));
-  unsigned int *d_out=NULL;
-  CHECK(cudaMalloc((void**)&d_out,n*sizeof(unsigned int)));
-  unsigned int *d_sum=NULL;
-  CHECK(cudaMalloc((void**)&d_sum,n*sizeof(unsigned int)));
-  unsigned int *d_index=NULL;
-  CHECK(cudaMalloc((void**)&d_index,n*sizeof(unsigned int)));
-
-  std::vector<unsigned int> inter_sum(n);
-  // unsigned int inter_sum[n];
-
   cuda_memcpy(d_in,data,n,cudaMemcpyHostToDevice);
 
-  data_t bits=sizeof(data_t)*8;
+
+  data_t *d_out=NULL;
+  CHECK(cudaMalloc((void**)&d_out,n*sizeof(data_t)));
+
+  data_t* d_prefix_sums; //local prefix sum
+
+  CHECK(cudaMalloc((void**)&d_prefix_sums,n*sizeof(data_t)));
+  CHECK(cudaMemset(d_prefix_sums, 0, n*sizeof(data_t)));
 
 
 
-  unsigned int total_zeros, mask_last;
+  data_t* d_block_sums; //block sum in the paper
+  data_t d_block_sums_len = 4 * grid_size; // 4-way split
+  CHECK(cudaMalloc(&d_block_sums, sizeof(data_t) * d_block_sums_len));
+  CHECK(cudaMemset(d_block_sums, 0, sizeof(data_t) * d_block_sums_len));
 
-  for(data_t i=0; i<bits; i++){
-      // get mask for 0 and store in d_out
-      // getMask<<<dimGrid, dimBlock>>>(d_in, d_out, n, i, 0);
-      CHECK(cudaMemset(d_sum,0,n*sizeof(unsigned int)));
-      getMask<<<divup(n,block_size*len),block_size>>>(d_in, d_out, len, n, i, 0);
-      // std::cout<<"out"<<std::endl;
-      // CHECK(cudaMemcpy(index,d_out, n * sizeof(unsigned int), cudaMemcpyDeviceToHost));
-      // for(int j=0; j<n; j++){
-      //   std::cout<< index[j] << " " ;
-      // }
-      // std::cout<< std::endl;
 
-      CHECK(cudaGetLastError());
-      //inclusive prefix sum
+  data_t* d_scan_block_sums;//prefix block sum in the paper
+  CHECK(cudaMalloc(&d_scan_block_sums, sizeof(data_t) * d_block_sums_len)); 
+  CHECK(cudaMemset(d_scan_block_sums, 0, sizeof(data_t) * d_block_sums_len));
+
+  data_t s_data_len = len;
+  data_t s_mask_out_len = len + 1;
+  data_t s_merged_scan_mask_out_len = len;
+  data_t s_mask_out_sums_len = 4; // 4-way split
+  data_t s_scan_mask_out_sums_len = 4;
+  data_t shmem_sz = (s_data_len 
+                          + s_mask_out_len
+                          + s_merged_scan_mask_out_len
+                          + s_mask_out_sums_len
+                          + s_scan_mask_out_sums_len)
+                          * sizeof(data_t);//share memory size
+  
+  
+
+  for (data_t shift_width = 0; shift_width <= sizeof(data_t)*8 ; shift_width += 2)
+  {
+      if(order_checking(d_in,n)) break;
+
+      gpu_radix_sort_local<<<grid_size, block_size, shmem_sz>>>(d_out, 
+                                                                d_prefix_sums, 
+                                                                d_block_sums, 
+                                                                shift_width, 
+                                                                d_in, 
+                                                                n, 
+                                                                len);
       
-      prefixsum<<<divup(n,block_size*len),block_size>>>(d_out,d_sum,len,n);
-      CHECK(cudaGetLastError());
-      serialsum_accrossthread<<<divup(n,block_size*len*block_size),block_size>>>(d_sum,len,n);
-      CHECK(cudaGetLastError());
-      mergethread<<<divup(n,block_size*len),block_size>>>(d_sum,len,n);
-      CHECK(cudaGetLastError());
-      CHECK(cudaMemcpy(inter_sum.data(), d_sum, n * sizeof(unsigned int), cudaMemcpyDeviceToHost));
-      serialsum_accrossblock(inter_sum.data(), len, n, block_size);
-      CHECK(cudaMemcpy(d_sum, inter_sum.data(),n * sizeof(unsigned int), cudaMemcpyHostToDevice));
-      // serialsum_accrossblock<<<divup(n,block_size*len*block_size*block_size) ,block_size>>>(d_sum,len,n);
-      // CHECK(cudaGetLastError());
-      mergeblock<<<divup(n,block_size*len),block_size>>>(d_sum,len,n);
-      CHECK(cudaGetLastError());
+      // scan global block sum array
+      // prefix block sum in the paper
+      sum_scan_blelloch(d_scan_block_sums, d_block_sums, d_block_sums_len);
 
-      CHECK(cudaMemcpy(&total_zeros, d_sum+n-1, sizeof(unsigned int), cudaMemcpyDeviceToHost));
-      CHECK(cudaMemcpy(&mask_last, d_out+n-1, sizeof(unsigned int), cudaMemcpyDeviceToHost));
-      total_zeros+=(mask_last==1)?1:0;
-      // std::cout<< "zeros" << total_zeros<< std::endl;
-      // std::cout<<"sum1"<<std::endl;
-      // CHECK(cudaMemcpy(index,d_sum, n * sizeof(unsigned int), cudaMemcpyDeviceToHost));
-      // for(int j=0; j<n; j++){
-      //   std::cout<< index[j] << " " ;
-      // }
-      // std::cout<< std::endl;
-
-      getIndex<<<divup(n,block_size*len),block_size>>>(d_index, d_sum, d_out, len, n, 0);
-      
-      CHECK(cudaGetLastError());
-      // get mask for 1 and store in d_out
-      getMask<<<divup(n,block_size*len),block_size>>>(d_in, d_out, len, n, i, 1);
-
-      // std::cout<<"out"<<std::endl;
-      // CHECK(cudaMemcpy(index,d_out, n * sizeof(unsigned int), cudaMemcpyDeviceToHost));
-      // for(int j=0; j<n; j++){
-      //   std::cout<< index[j] << " " ;
-      // }
-      // std::cout<< std::endl;
-
-      CHECK(cudaGetLastError());
-      //inclusive prefix sum
-      CHECK(cudaMemset(d_sum,0,n*sizeof(unsigned int)));
-      prefixsum<<<divup(n,block_size*len),block_size>>>(d_out,d_sum,len,n);
-      CHECK(cudaGetLastError());
-      serialsum_accrossthread<<<divup(n,block_size*len*block_size),block_size>>>(d_sum,len,n);
-      CHECK(cudaGetLastError());
-      mergethread<<<divup(n,block_size*len),block_size>>>(d_sum,len,n);
-      CHECK(cudaGetLastError());
-
-      CHECK(cudaMemcpy(inter_sum.data() , d_sum, n * sizeof(unsigned int), cudaMemcpyDeviceToHost));
-      serialsum_accrossblock(inter_sum.data(), len, n, block_size);
-      CHECK(cudaMemcpy(d_sum, inter_sum.data(),n * sizeof(unsigned int), cudaMemcpyHostToDevice));
-      // serialsum_accrossblock<<<divup(n,block_size*len*block_size*block_size) ,block_size>>>(d_sum,len,n);
-      // CHECK(cudaGetLastError());
-      mergeblock<<<divup(n,block_size*len),block_size>>>(d_sum,len,n);
-      CHECK(cudaGetLastError());
-      // std::cout<<"sum2"<<std::endl;
-      // CHECK(cudaMemcpy(index,d_sum, n * sizeof(unsigned int), cudaMemcpyDeviceToHost));
-      // for(int j=0; j<n; j++){
-      //   std::cout<< index[j] << " " ;
-      // }
-      // std::cout<< std::endl;
-      
-      getIndex<<<divup(n,block_size*len),block_size>>>(d_index, d_sum, d_out, len, n, total_zeros);
-      CHECK(cudaGetLastError());
-      // std::cout<<"index"<<std::endl;
-      // CHECK(cudaMemcpy(index,d_index, n * sizeof(unsigned int), cudaMemcpyDeviceToHost));
-      // for(int j=0; j<n; j++){
-      //   std::cout<< index[j] << " " ;
-      // }
-      // std::cout<< std::endl;
-
-      scatter<<<divup(n,block_size*len),block_size>>>(d_in, d_index, d_out_long, len, n);
-      // CHECK(cudaMemcpy(cal_result,d_out_long, n * sizeof(data_t), cudaMemcpyDeviceToHost));
-      // for(int j=0; j<n; j++){
-      //   std::cout<< cal_result[j] << " " ;
-      // }
-      // std::cout<< std::endl;
-      CHECK(cudaGetLastError());
-      //must swap pointers
-      d_temp = d_in;
-      d_in = d_out_long;
-      d_out_long = d_temp;
+      // scatter/shuffle block-wise sorted array to final positions
+      gpu_glbl_shuffle<<<grid_size, block_size>>>(d_in, 
+                                                  d_out, 
+                                                  d_scan_block_sums, 
+                                                  d_prefix_sums, 
+                                                  shift_width, 
+                                                  n, 
+                                                  len);
   }
 
+
   cuda_memcpy(data, d_in, n, cudaMemcpyDeviceToHost);
+
   CHECK(cudaFree(d_in));
-  CHECK(cudaFree(d_out_long));
   CHECK(cudaFree(d_out));
-  CHECK(cudaFree(d_sum));
-  CHECK(cudaFree(d_index));
+  CHECK(cudaFree(d_scan_block_sums));
+  CHECK(cudaFree(d_block_sums));
+  CHECK(cudaFree(d_prefix_sums));
   // std::sort(data, data + n);
 }
 
 
 int main(){
 
-  const data_t n=10000000; //100000 number
+  const data_t n=100000000; //100000 number
   std::vector<data_t> data(n);
   // data_t * data= new data_t[n];
   // data_t data[n];
@@ -310,11 +660,18 @@ int main(){
   for (data_t i=0; i<n; i++){
     data[i]=i;
   }
+//   data[100]+=100;
+  data_t *d_in=NULL;
+  CHECK(cudaMalloc((void**)&d_in,n*sizeof(data_t)));
 
+  cuda_memcpy(d_in,data.data(),n,cudaMemcpyHostToDevice);
+
+  std::cout << order_checking(d_in,n)<<std::endl;
+  CHECK(cudaFree(d_in));
   // for (data_t i=0; i<n; i++){
   //   result[i]=i;
   // }
-  psort(n, data.data());
+//   psort(n, data.data());
 
 
   // for(data_t i=0; i<n; i++){
